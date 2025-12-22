@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 # Streamlit — 5 Formularios (5 hojas) + Visor (capas) — Google Sheets como DB
+# TODOS los formularios arrancan con el MISMO mapa base: ESRI SATÉLITE.
+# Dentro de cada formulario podés cambiar el estilo desde un selector (Base gris / OSM / Terreno / Satélite).
+#
 # Requisitos: streamlit, pandas, gspread, google-auth, folium, streamlit-folium
 # Secrets: st.secrets["gcp_service_account"] con el JSON del service account
 
@@ -68,18 +71,18 @@ _PALETTE = [
 FACTOR_COLORS = {f: _PALETTE[i % len(_PALETTE)] for i, f in enumerate(FACTORES)}
 
 # ==========================================================
-# MAP CONFIGS — 5 estilos, misma vista general de Costa Rica
+# MAP CONFIG — vista general CR (igual para todos)
 # ==========================================================
 CR_CENTER = [9.7489, -83.7534]
 CR_ZOOM = 8
 
-MAP_CONFIGS = {
-    "Formulario 1": {"center": CR_CENTER, "zoom": CR_ZOOM, "tiles": [("Esri Satélite", "Esri.WorldImagery")]},
-    "Formulario 2": {"center": CR_CENTER, "zoom": CR_ZOOM, "tiles": [("Base gris (Carto)", "CartoDB positron"), ("OpenStreetMap", "OpenStreetMap")]},
-    "Formulario 3": {"center": CR_CENTER, "zoom": CR_ZOOM, "tiles": [("Terreno (Stamen)", "Stamen Terrain"), ("OpenStreetMap", "OpenStreetMap")]},
-    "Formulario 4": {"center": CR_CENTER, "zoom": CR_ZOOM, "tiles": [("Esri Satélite", "Esri.WorldImagery"), ("Base gris", "CartoDB positron")]},
-    "Formulario 5": {"center": CR_CENTER, "zoom": CR_ZOOM, "tiles": [("OpenStreetMap", "OpenStreetMap"), ("Base gris (Carto)", "CartoDB positron")]},
-}
+# Selector de estilos por formulario (todos arrancan en ESRI)
+MAP_STYLE_OPTIONS = [
+    "Esri Satélite",
+    "Base gris (Carto)",
+    "OpenStreetMap",
+    "Terreno (Stamen)",
+]
 
 # ==========================================================
 # GOOGLE SHEETS (DB)
@@ -104,7 +107,6 @@ def _get_or_create_ws(ws_name: str):
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=ws_name, rows=5000, cols=max(26, len(HEADERS) + 5))
 
-    # asegurar headers
     current = [h.strip() for h in ws.row_values(1)]
     if not current:
         ws.append_row(HEADERS, value_input_option="USER_ENTERED")
@@ -130,10 +132,6 @@ def _split_factores(factores):
     return []
 
 def append_rows_one_per_factor(ws_name: str, data: dict):
-    """
-    Guarda N filas (una por factor). No guarda lat/lng como columnas:
-    la georef va dentro de maps_link => https://www.google.com/maps?q=lat,lng
-    """
     ws = _get_or_create_ws(ws_name)
     headers = _headers(ws)
 
@@ -157,16 +155,10 @@ def append_rows_one_per_factor(ws_name: str, data: dict):
         }
         ws.append_row([row_dict.get(h, "") for h in headers], value_input_option="USER_ENTERED")
         saved += 1
-
     return saved
 
 @st.cache_data(ttl=25, show_spinner=False)
 def read_df(ws_name: str) -> pd.DataFrame:
-    """
-    Lee una hoja y devuelve DF.
-    Extrae lat/lng desde maps_link.
-    Expande legacy "A | B" en múltiples filas (1 factor por fila).
-    """
     ws = _get_or_create_ws(ws_name)
     records = ws.get_all_records()
     if not records:
@@ -174,8 +166,6 @@ def read_df(ws_name: str) -> pd.DataFrame:
         return pd.DataFrame(columns=cols)
 
     df_raw = pd.DataFrame(records)
-
-    # normalizar columnas
     for c in HEADERS:
         if c not in df_raw.columns:
             df_raw[c] = ""
@@ -223,23 +213,38 @@ def _add_panes(m):
     folium.map.CustomPane("markers", z_index=400).add_to(m)
     folium.map.CustomPane("heatmap", z_index=650).add_to(m)
 
-def _add_tiles(m, tiles_list):
+def _add_tile_by_name(m, style_name: str):
     """
-    tiles_list: [(name, tile_id), ...]
-    tile_id puede ser: "OpenStreetMap", "CartoDB positron", "Stamen Terrain"
-    o "Esri.WorldImagery" (custom)
+    Agrega una capa base según el nombre (SIEMPRE con atribución si es custom).
     """
-    for name, tile_id in tiles_list:
-        if tile_id == "Esri.WorldImagery":
-            folium.TileLayer(
-                tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-                attr="Esri",
-                name=name,
-                overlay=False,
-                control=True
-            ).add_to(m)
-        else:
-            folium.TileLayer(tile_id, name=name, overlay=False, control=True).add_to(m)
+    if style_name == "Esri Satélite":
+        folium.TileLayer(
+            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            attr="Esri",
+            name="Esri Satélite",
+            overlay=False,
+            control=True
+        ).add_to(m)
+
+    elif style_name == "Base gris (Carto)":
+        folium.TileLayer("CartoDB positron", name="Base gris (Carto)", overlay=False, control=True).add_to(m)
+
+    elif style_name == "OpenStreetMap":
+        folium.TileLayer("OpenStreetMap", name="OpenStreetMap", overlay=False, control=True).add_to(m)
+
+    elif style_name == "Terreno (Stamen)":
+        # Folium exige attr en tiles custom (y en algunas versiones este tile ya no es built-in)
+        folium.TileLayer(
+            tiles="https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png",
+            attr="Map tiles by Stamen Design, under CC BY 3.0. Data by OpenStreetMap, under ODbL.",
+            name="Terreno (Stamen)",
+            overlay=False,
+            control=True
+        ).add_to(m)
+
+    else:
+        # fallback seguro
+        folium.TileLayer("CartoDB positron", name="Base gris (Carto)", overlay=False, control=True).add_to(m)
 
 def _legend_html():
     items = "".join(
@@ -271,9 +276,15 @@ tabs = st.tabs(tab_labels)
 # ==========================================================
 def render_form(form_label: str):
     ws_name = FORM_SHEETS[form_label]
-    cfg = MAP_CONFIGS[form_label]
-
     st.subheader(f"{form_label} — Guardando en hoja: {ws_name}")
+
+    # Selector de estilo (cada tab decide como verlo)
+    style = st.selectbox(
+        "Estilo de mapa",
+        options=MAP_STYLE_OPTIONS,
+        index=0,  # siempre arranca en ESRI
+        key=f"style_{ws_name}"
+    )
 
     left, right = st.columns([0.58, 0.42], gap="large")
 
@@ -285,13 +296,18 @@ def render_form(form_label: str):
         key_clicked = f"clicked_{ws_name}"
         clicked = st.session_state.get(key_clicked) or {}
         center = [
-            clicked.get("lat", cfg["center"][0]),
-            clicked.get("lng", cfg["center"][1])
+            clicked.get("lat", CR_CENTER[0]),
+            clicked.get("lng", CR_CENTER[1])
         ]
 
-        m = folium.Map(location=center, zoom_start=cfg["zoom"], control_scale=True, tiles=None)
+        m = folium.Map(location=center, zoom_start=CR_ZOOM, control_scale=True, tiles=None)
         _add_panes(m)
-        _add_tiles(m, cfg["tiles"])
+
+        # 👉 siempre agrega ESRI primero (base por defecto) + agrega el estilo elegido
+        _add_tile_by_name(m, "Esri Satélite")
+        if style != "Esri Satélite":
+            _add_tile_by_name(m, style)
+
         LocateControl(auto_start=False, flyTo=True).add_to(m)
 
         if clicked.get("lat") is not None and clicked.get("lng") is not None:
@@ -355,6 +371,7 @@ def render_form(form_label: str):
                     n = append_rows_one_per_factor(ws_name, payload)
                     st.success(f"✅ Guardado: {n} fila(s) en {ws_name} (una por factor).")
                     st.cache_data.clear()
+                    st.rerun()
                 except Exception as e:
                     st.error(f"❌ No se pudo guardar.\n\n{e}")
 
@@ -382,11 +399,18 @@ for i, form_label in enumerate(FORM_SHEETS.keys()):
 with tabs[-1]:
     st.subheader("🗺️ Visor (capas) — Ver datos por formulario o todo junto")
 
-    # Cargar todos
+    # Selector de estilo en visor también (arranca en ESRI)
+    visor_style = st.selectbox(
+        "Estilo de mapa (Visor)",
+        options=MAP_STYLE_OPTIONS,
+        index=0,
+        key="visor_style"
+    )
+
     all_dfs = []
     for form_label, ws_name in FORM_SHEETS.items():
         df = read_df(ws_name)
-        df["source_form"] = form_label  # nombre amigable
+        df["source_form"] = form_label
         all_dfs.append(df)
 
     df_all = pd.concat(all_dfs, ignore_index=True) if all_dfs else pd.DataFrame()
@@ -406,32 +430,28 @@ with tabs[-1]:
         with c3:
             show_clusters = st.checkbox("Mostrar clusters", value=True)
 
-        # filtro por capa
         dfv = df_all.copy()
         if layer != "(Todos)":
             dfv = dfv[dfv["source_form"] == layer]
 
-        # filtro por factor (opcional)
         factores_unicos = sorted([f for f in dfv["factores"].dropna().unique() if str(f).strip()])
         factor_sel = st.selectbox("Filtrar por factor (opcional)", options=["(Todos)"] + factores_unicos, index=0)
         if factor_sel != "(Todos)":
             dfv = dfv[dfv["factores"] == factor_sel]
 
-        # Mapa visor (vista general CR)
         m = folium.Map(location=CR_CENTER, zoom_start=CR_ZOOM, control_scale=True, tiles=None)
         _add_panes(m)
-        # base por defecto en visor (gris + OSM + satélite)
-        _add_tiles(m, [
-            ("Base gris (Carto)", "CartoDB positron"),
-            ("OpenStreetMap", "OpenStreetMap"),
-            ("Esri Satélite", "Esri.WorldImagery"),
-        ])
+
+        # Siempre incluye ESRI + el estilo escogido
+        _add_tile_by_name(m, "Esri Satélite")
+        if visor_style != "Esri Satélite":
+            _add_tile_by_name(m, visor_style)
+
         LocateControl(auto_start=False).add_to(m)
 
         # leyenda
         m.get_root().html.add_child(folium.Element(_legend_html()))
 
-        # cluster o group
         group = (MarkerCluster(name="Marcadores", overlay=True, control=True, pane="markers")
                  if show_clusters else folium.FeatureGroup(name="Marcadores", overlay=True, control=True))
         group.add_to(m)
