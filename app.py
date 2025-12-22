@@ -2,6 +2,7 @@
 # Streamlit — 5 Formularios (5 hojas) + Visor (capas) + Gráficas — Google Sheets como DB
 # ✅ Todos los formularios arrancan con ESRI Satélite (y podés cambiar estilo en cada tab)
 # ✅ Visor SIN parpadeo (returned_objects=[] + jitter determinístico)
+# ✅ Marcadores con PIN tipo “Google Maps” (BeautifyIcon) — ícono predeterminado
 # ✅ Gráficas más pro (tema oscuro, barras horizontales, donut, sunburst “capas”)
 #
 # Requisitos: streamlit, pandas, gspread, google-auth, folium, streamlit-folium, plotly
@@ -18,7 +19,7 @@ from google.oauth2.service_account import Credentials
 
 import folium
 from streamlit_folium import st_folium
-from folium.plugins import MarkerCluster, LocateControl, HeatMap
+from folium.plugins import MarkerCluster, LocateControl, HeatMap, BeautifyIcon
 
 import plotly.express as px
 
@@ -73,13 +74,15 @@ _PALETTE = [
 ]
 FACTOR_COLORS = {f: _PALETTE[i % len(_PALETTE)] for i, f in enumerate(FACTORES)}
 
+# Ícono predeterminado dentro del pin (FontAwesome)
+DEFAULT_PIN_ICON = "map-marker-alt"
+
 # ==========================================================
 # MAP CONFIG — vista general CR (igual para todos)
 # ==========================================================
 CR_CENTER = [9.7489, -83.7534]
 CR_ZOOM = 8
 
-# Selector de estilos por formulario (todos arrancan en ESRI)
 MAP_STYLE_OPTIONS = [
     "Esri Satélite",
     "Base gris (Carto)",
@@ -261,8 +264,18 @@ def _legend_html():
         f'{items}</div>'
     )
 
+def make_pin_icon(color_hex: str):
+    """Pin tipo Google Maps con ícono predeterminado (FontAwesome)."""
+    return BeautifyIcon(
+        icon=DEFAULT_PIN_ICON,
+        icon_shape="marker",
+        background_color=color_hex,
+        border_color="#111",
+        text_color="#fff"
+    )
+
 # ==========================================================
-# DATA UTILS (para visor y gráficas)
+# DATA UTILS
 # ==========================================================
 def load_all_data() -> pd.DataFrame:
     dfs = []
@@ -294,7 +307,7 @@ def render_form(form_label: str):
     style = st.selectbox(
         "Estilo de mapa",
         options=MAP_STYLE_OPTIONS,
-        index=0,  # ESRI por defecto
+        index=0,
         key=f"style_{ws_name}"
     )
 
@@ -314,19 +327,19 @@ def render_form(form_label: str):
         m = folium.Map(location=center, zoom_start=CR_ZOOM, control_scale=True, tiles=None)
         _add_panes(m)
 
-        # ESRI siempre + estilo elegido (si es distinto)
         _add_tile_by_name(m, "Esri Satélite")
         if style != "Esri Satélite":
             _add_tile_by_name(m, style)
 
         LocateControl(auto_start=False, flyTo=True).add_to(m)
 
+        # Punto seleccionado (pin)
         if clicked.get("lat") is not None and clicked.get("lng") is not None:
-            folium.CircleMarker(
+            folium.Marker(
                 [clicked["lat"], clicked["lng"]],
-                radius=8, color="#000", weight=1,
-                fill=True, fill_color="#2dd4bf", fill_opacity=0.9,
-                tooltip="Ubicación seleccionada", pane="markers"
+                icon=make_pin_icon("#2dd4bf"),
+                tooltip="Ubicación seleccionada",
+                pane="markers"
             ).add_to(m)
 
         folium.LayerControl(collapsed=False).add_to(m)
@@ -390,7 +403,8 @@ def render_form(form_label: str):
     st.divider()
     st.markdown("#### Últimos registros (hoja actual)")
     df_local = read_df(ws_name)
-    view = df_local[["date","barrio","factores","delitos_relacionados","ligado_estructura","nombre_estructura","observaciones","maps_link"]]
+    view = df_local[["date","barrio","factores","delitos_relacionados",
+                     "ligado_estructura","nombre_estructura","observaciones","maps_link"]]
     st.dataframe(view.tail(200), use_container_width=True)
     st.download_button(
         "⬇️ Descargar CSV de este formulario",
@@ -406,7 +420,7 @@ for i, form_label in enumerate(FORM_SHEETS.keys()):
         render_form(form_label)
 
 # ==========================================================
-# VISOR (capas) — SIN PARPADEO
+# VISOR (capas) — SIN PARPADEO + PIN ICON
 # ==========================================================
 with tabs[-2]:
     st.subheader("🗺️ Visor (capas) — Ver datos por formulario o todo junto")
@@ -481,15 +495,16 @@ with tabs[-2]:
                 f"<b>Maps:</b> <a href='{r.get('maps_link','')}' target='_blank'>Abrir</a>"
             )
 
-            # ✅ jitter determinístico (no cambia cada rerun)
+            # ✅ jitter determinístico
             jlat = float(lat) + _jitter(idx)
             jlng = float(lng) + _jitter(idx + 101)
 
-            folium.CircleMarker(
+            # ✅ Pin tipo Google Maps con icono predeterminado
+            folium.Marker(
                 [jlat, jlng],
-                radius=7, color="#000", weight=1,
-                fill=True, fill_color=color, fill_opacity=0.9,
-                popup=popup, pane="markers"
+                icon=make_pin_icon(color),
+                popup=popup,
+                pane="markers"
             ).add_to(group)
 
             heat_points.append([float(lat), float(lng), 1.0])
@@ -505,7 +520,7 @@ with tabs[-2]:
 
         folium.LayerControl(collapsed=False).add_to(m)
 
-        # ✅ Evita bucle de reruns por eventos del mapa
+        # ✅ Evita bucle de reruns por eventos del mapa (PARPADEO SOLUCIONADO)
         st_folium(
             m,
             height=560,
