@@ -1,11 +1,11 @@
-streamlit==1.36.0
-pandas==2.2.2
+streamlit
+pandas
+gspread
+google-auth
+folium
+streamlit-folium
 
-gspread==6.1.2
-google-auth==2.33.0
 
-folium==0.16.0
-streamlit-folium==0.20.0
 
 
 
