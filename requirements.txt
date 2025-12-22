@@ -4,6 +4,7 @@ gspread
 google-auth
 folium
 streamlit-folium
+plotly
 
 
 
