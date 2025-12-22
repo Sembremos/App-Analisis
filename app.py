@@ -216,40 +216,61 @@ def read_df_generic(ws_name: str, headers: list) -> pd.DataFrame:
     return df
 # ==========================================================
 # PARTE 3/10
-# MAPA: utilidades (tiles, iconos, panes, jitter) +
-#       capas administrativas (Provincias/Cantones con hover)
-#
-# ✅ FIX 1: Evita AssertionError (Folium exige fields=list/tuple, nunca None)
-# ✅ FIX 2: Tooltip muestra NOMBRE (string) y evita códigos numéricos (ej. 56)
-# ✅ FIX 3: GeoJSON cacheado para reducir recargas
+# MAPA: utilidades + capas administrativas (hover)
+# FIX: Si GeoJSON trae códigos (CR-XXX), mostrar NOMBRES reales
 # ==========================================================
 
 import math
 import json
 from urllib.request import urlopen
 
-# ---------- Pequeño jitter para puntos (evita que se monten exactos) ----------
+# --- Catálogo (OPCIÓN RECOMENDADA): hoja en Sheets con mapping ---
+# Crea una pestaña en tu Google Sheet llamada: "Catalogos_Admin"
+# con estas columnas:
+# tipo | codigo | nombre
+# canton | CR-CTU | Turrialba
+# provincia | CR-C | Cartago
+ADMIN_CATALOG_SHEET = "Catalogos_Admin"
+
+@st.cache_data(show_spinner=False, ttl=300)
+def load_admin_catalog() -> dict:
+    """
+    Lee el catálogo desde Google Sheets (Catalogos_Admin)
+    Retorna dict:
+      {
+        "canton": {"CR-CTU": "Turrialba", ...},
+        "provincia": {"CR-C": "Cartago", ...}
+      }
+    """
+    try:
+        sh = _ws().spreadsheet   # reutilizamos el mismo client/spreadsheet
+        ws_cat = sh.worksheet(ADMIN_CATALOG_SHEET)
+        rows = ws_cat.get_all_records()
+        out = {"canton": {}, "provincia": {}}
+        for r in rows:
+            t = str(r.get("tipo", "")).strip().lower()
+            c = str(r.get("codigo", "")).strip()
+            n = str(r.get("nombre", "")).strip()
+            if t in out and c and n:
+                out[t][c] = n
+        return out
+    except Exception:
+        # Si no existe la hoja todavía, no rompemos nada
+        return {"canton": {}, "provincia": {}}
+
+
 def _jitter(idx: int, base: float = 0.00008) -> float:
     random.seed(idx)
     return (random.random() - 0.5) * base
 
-# ---------- Panes para controlar orden de capas ----------
+
 def _add_panes(m):
-    """
-    admin: provincias/cantones (debajo)
-    markers: puntos y clusters (arriba)
-    heatmap: mapa de calor (encima de tiles, debajo/encima según z-index)
-    """
     folium.map.CustomPane("admin", z_index=250).add_to(m)
     folium.map.CustomPane("markers", z_index=400).add_to(m)
     folium.map.CustomPane("heatmap", z_index=650).add_to(m)
 
-# ---------- Tiles / estilos base ----------
+
 def _add_tile_by_name(m, style_name: str):
-    """
-    Agrega el basemap según nombre.
-    Nota: 'Esri Satélite' requiere attr sí o sí (Folium lo exige).
-    """
     if style_name == "Esri Satélite":
         folium.TileLayer(
             tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -258,23 +279,10 @@ def _add_tile_by_name(m, style_name: str):
             overlay=False,
             control=True
         ).add_to(m)
-
     elif style_name == "Base gris (Carto)":
-        folium.TileLayer(
-            "CartoDB positron",
-            name="Base gris (Carto)",
-            overlay=False,
-            control=True
-        ).add_to(m)
-
+        folium.TileLayer("CartoDB positron", name="Base gris (Carto)", overlay=False, control=True).add_to(m)
     elif style_name == "OpenStreetMap":
-        folium.TileLayer(
-            "OpenStreetMap",
-            name="OpenStreetMap",
-            overlay=False,
-            control=True
-        ).add_to(m)
-
+        folium.TileLayer("OpenStreetMap", name="OpenStreetMap", overlay=False, control=True).add_to(m)
     elif style_name == "Terreno (Stamen)":
         folium.TileLayer(
             tiles="https://stamen-tiles.a.ssl.fastly.net/terrain/{z}/{x}/{y}.png",
@@ -284,49 +292,29 @@ def _add_tile_by_name(m, style_name: str):
             control=True
         ).add_to(m)
 
-# ---------- Icono tipo pin (estilo Google) ----------
+
 def make_pin_icon(color_hex: str):
-    """
-    Pin por defecto para marcadores.
-    Requiere: from folium.plugins import BeautifyIcon
-    """
     return BeautifyIcon(
-        icon=DEFAULT_PIN_ICON,      # ej. "map-marker-alt"
+        icon=DEFAULT_PIN_ICON,
         icon_shape="marker",
         background_color=color_hex,
         border_color="#111",
         text_color="#fff"
     )
 
-# ---------- Cargar GeoJSON (cacheado) ----------
+
 @st.cache_data(show_spinner=False)
 def _load_geojson(url: str) -> dict:
-    """
-    Descarga GeoJSON una vez y lo guarda en cache.
-    Esto reduce muchísimo las recargas y parpadeos.
-    """
     with urlopen(url) as r:
         return json.loads(r.read().decode("utf-8"))
 
-# ---------- Elegir el campo correcto para tooltip ----------
-def _pick_prop_key(geojson: dict, candidates: list[str], prefer_text: bool = True):
-    """
-    Devuelve la key más adecuada dentro de 'properties' del primer feature.
 
-    - candidates: lista de nombres posibles (por si el GeoJSON cambia)
-    - prefer_text=True: evita seleccionar campos numéricos (códigos) como 56
-      y prefiere strings (nombres tipo "San José", "Alajuela", etc.)
-
-    ✅ IMPORTANTE:
-    Folium exige que GeoJsonTooltip(fields=...) reciba SIEMPRE list/tuple,
-    jamás None. Por eso esta función devuelve None solo si no hay props.
-    """
+def _pick_prop_key(geojson: dict, candidates: list[str], prefer_text=True):
     try:
         props = (geojson.get("features", [{}])[0].get("properties", {}) or {})
         if not props:
             return None
 
-        # 1) Intentar candidatos (en orden)
         for k in candidates:
             if k in props and props.get(k) is not None:
                 v = props.get(k)
@@ -334,41 +322,59 @@ def _pick_prop_key(geojson: dict, candidates: list[str], prefer_text: bool = Tru
                     continue
                 return k
 
-        # 2) Si prefer_text: buscar el primer string “decente”
         if prefer_text:
             for k, v in props.items():
                 if isinstance(v, str) and len(v.strip()) >= 3:
                     return k
 
-        # 3) Último fallback (lo que exista)
         return list(props.keys())[0]
-
     except Exception:
         return None
 
-# ---------- Capas administrativas (Provincias / Cantones) ----------
-def add_admin_layers(m: folium.Map, show_provincias: bool = True, show_cantones: bool = True):
-    """
-    Agrega GeoJson de provincias y cantones con hover (tooltip).
 
-    ✅ FIX: Nunca pasamos fields=None a GeoJsonTooltip (evita AssertionError).
-    ✅ Además: Preferimos campos string (NOMBRES) para que no salga "Cantón: 56".
+def _enrich_with_nombre_show(geojson: dict, tipo: str, prefer_name_keys: list[str], code_keys: list[str]) -> dict:
+    """
+    Agrega properties['nombre_show'] para tooltip.
+    - Si existe un campo nombre en properties, lo usa.
+    - Si no, busca un campo código (ej CR-CTU) y lo traduce usando el catálogo.
+    """
+    catalog = load_admin_catalog().get(tipo, {})
+
+    # detecta keys
+    name_key = _pick_prop_key(geojson, prefer_name_keys, prefer_text=True)
+    code_key = _pick_prop_key(geojson, code_keys, prefer_text=False)
+
+    for f in geojson.get("features", []):
+        p = f.get("properties", {}) or {}
+        # 1) Si hay nombre real, úsalo
+        if name_key and isinstance(p.get(name_key), str) and p.get(name_key).strip():
+            p["nombre_show"] = p.get(name_key).strip()
+        else:
+            # 2) Si hay código, tradúcelo
+            code_val = str(p.get(code_key, "")).strip() if code_key else ""
+            if code_val and code_val in catalog:
+                p["nombre_show"] = catalog[code_val]
+            else:
+                # 3) fallback
+                p["nombre_show"] = code_val or "(sin nombre)"
+        f["properties"] = p
+
+    return geojson
+
+
+def add_admin_layers(m: folium.Map, show_provincias=True, show_cantones=True):
+    """
+    Capas admin con hover:
+    - Tooltip SIEMPRE usa 'nombre_show' (ya viene enriquecido)
     """
 
-    # ===== Provincias =====
     if show_provincias:
         prov = _load_geojson(CR_PROVINCIAS_GEOJSON_URL)
-
-        # Preferimos nombres (strings)
-        prov_key = _pick_prop_key(
+        prov = _enrich_with_nombre_show(
             prov,
-            [
-                "NOM_PROV", "nom_prov",
-                "provincia", "Provincia", "PROVINCIA",
-                "name", "NAME",
-                "nombre", "NOMBRE"
-            ],
-            prefer_text=True
+            tipo="provincia",
+            prefer_name_keys=["NOM_PROV", "provincia", "Provincia", "PROVINCIA", "name", "NAME", "nombre", "NOMBRE"],
+            code_keys=["codigo", "CODIGO", "id", "ID", "iso", "ISO", "prov_code", "PROV_CODE"]
         )
 
         gj = folium.GeoJson(
@@ -378,34 +384,16 @@ def add_admin_layers(m: folium.Map, show_provincias: bool = True, show_cantones:
             style_function=lambda f: {"color": "#00E5FF", "weight": 2, "fillOpacity": 0.0},
             highlight_function=lambda f: {"weight": 4, "color": "#00E5FF"},
         )
-
-        # ✅ Solo si existe key (y fields siempre list)
-        if prov_key:
-            gj.add_child(
-                folium.GeoJsonTooltip(
-                    fields=[prov_key],
-                    aliases=["Provincia:"],
-                    sticky=True
-                )
-            )
-
+        gj.add_child(folium.GeoJsonTooltip(fields=["nombre_show"], aliases=["Provincia:"], sticky=True))
         gj.add_to(m)
 
-    # ===== Cantones =====
     if show_cantones:
         cant = _load_geojson(CR_CANTONES_GEOJSON_URL)
-
-        # Preferimos nombres (strings)
-        canton_key = _pick_prop_key(
+        cant = _enrich_with_nombre_show(
             cant,
-            [
-                "NOM_CANT", "nom_cant",
-                "CANTON_NOM", "canton_name",
-                "canton", "cantón", "CANTON", "Canton",
-                "name", "NAME",
-                "nombre", "NOMBRE"
-            ],
-            prefer_text=True
+            tipo="canton",
+            prefer_name_keys=["NOM_CANT", "canton", "Cantón", "CANTON", "name", "NAME", "nombre", "NOMBRE"],
+            code_keys=["codigo", "CODIGO", "id", "ID", "iso", "ISO", "canton_id", "CANTON_ID", "code", "CODE"]
         )
 
         gj2 = folium.GeoJson(
@@ -415,18 +403,9 @@ def add_admin_layers(m: folium.Map, show_provincias: bool = True, show_cantones:
             style_function=lambda f: {"color": "#FFFFFF", "weight": 1, "fillOpacity": 0.0},
             highlight_function=lambda f: {"weight": 3, "color": "#FFFFFF"},
         )
-
-        # ✅ Solo si existe key (y fields siempre list)
-        if canton_key:
-            gj2.add_child(
-                folium.GeoJsonTooltip(
-                    fields=[canton_key],
-                    aliases=["Cantón:"],
-                    sticky=True
-                )
-            )
-
+        gj2.add_child(folium.GeoJsonTooltip(fields=["nombre_show"], aliases=["Cantón:"], sticky=True))
         gj2.add_to(m)
+
 
 # ==========================================================
 # PARTE 4/10
@@ -969,6 +948,7 @@ with tabs[-1]:
             fig_donut.update_traces(textinfo="percent", textposition="inside")
             fig_donut.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
             st.plotly_chart(fig_donut, use_container_width=True)
+
 
 
 
