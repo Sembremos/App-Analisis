@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 # Streamlit — 5 Formularios (5 hojas) + Visor (capas) + Gráficas — Google Sheets como DB
-# ✅ Formulario 1 ahora replica columnas del Excel (Provincia, N, Cantón, Estructura_1..Estructura_11)
-# ✅ Tab 1 y hoja en Sheets con el mismo título del Excel
-# ✅ Mantiene mapa y georreferencia via maps_link
+# ✅ Formulario 1: Provincia, Cantón, Barrio (opcional) + Estructuras (1..11) + map
+# ✅ Se elimina N
+# ✅ Dashboard dentro de Form 1 con filtros (Provincia/Cantón/Pandilla) + gráficas
 # ✅ Visor sin parpadeo + pines tipo Google (BeautifyIcon)
-# ✅ Gráficas pro (barras/donut/sunburst)
+# ✅ Gráficas pro (barras/donut/sunburst) para todo el sistema
 
 import streamlit as st
 import pandas as pd
@@ -29,11 +29,10 @@ TZ = ZoneInfo("America/Costa_Rica")
 
 SHEET_ID = "1pCUXSJ_hvQzpzBTaJ-h0ntcdhYwMTyWomxXMjmi7lyg"
 
-# ====== Nombre del Excel para Tab 1 + Hoja 1 ======
-FORM1_TITLE = "Pandillas de trafico transnacional Costa Rica 2025"  # <- título tab y hoja
-FORM1_SHEET = FORM1_TITLE  # mismo nombre en Sheets
+# ====== Nombre del Form 1 (Tab 1 + Hoja 1) ======
+FORM1_TITLE = "Pandillas de trafico transnacional Costa Rica 2025"
+FORM1_SHEET = FORM1_TITLE
 
-# Formularios 2..5 (siguen como antes)
 FORM_SHEETS = {
     FORM1_TITLE: FORM1_SHEET,   # Form 1 (Excel)
     "Formulario 2": "Prueba_2",
@@ -45,11 +44,11 @@ FORM_SHEETS = {
 # ==========================================================
 # SCHEMAS
 # ==========================================================
-# Formulario 1: columnas tipo Excel (14 columnas) + maps_link + date
+# Formulario 1: Provincia, Cantón, Barrio (opcional) + 11 estructuras + maps_link + date
 FORM1_HEADERS = [
     "provincia",
-    "n",
     "canton",
+    "barrio",
     "estructura_1",
     "estructura_2",
     "estructura_3",
@@ -95,7 +94,6 @@ _PALETTE = [
     "#fb9a99","#cab2d6","#fdbf6f","#b15928"
 ]
 FACTOR_COLORS = {f: _PALETTE[i % len(_PALETTE)] for i, f in enumerate(FACTORES)}
-
 DEFAULT_PIN_ICON = "map-marker-alt"
 
 # ==========================================================
@@ -138,7 +136,6 @@ def _get_or_create_ws(ws_name: str, headers: list):
     if not current:
         ws.append_row(headers, value_input_option="USER_ENTERED")
     else:
-        # Si faltan columnas, las agrega al final
         missing = [h for h in headers if h not in current]
         if missing:
             start_col = len(current) + 1
@@ -162,11 +159,9 @@ def _split_factores(factores):
 def append_row_generic(ws_name: str, headers: list, row_dict: dict):
     ws = _get_or_create_ws(ws_name, headers)
     cols = _headers(ws)
-    # llena lo que exista; si hay columnas nuevas en sheet, también respeta
     ws.append_row([row_dict.get(c, "") for c in cols], value_input_option="USER_ENTERED")
 
 def append_rows_one_per_factor(ws_name: str, data: dict):
-    # para formularios 2..5
     headers = SURVEY_HEADERS
     ws = _get_or_create_ws(ws_name, headers)
     cols = _headers(ws)
@@ -177,7 +172,6 @@ def append_rows_one_per_factor(ws_name: str, data: dict):
 
     maps_url = f'https://www.google.com/maps?q={data["lat"]},{data["lng"]}'
     saved = 0
-
     for f in factores_list:
         row_dict = {
             "date": data.get("date", ""),
@@ -205,7 +199,6 @@ def read_df_generic(ws_name: str, headers: list) -> pd.DataFrame:
         if c not in df_raw.columns:
             df_raw[c] = ""
 
-    # extraer lat/lng desde maps_link si existe
     url_pat = re.compile(r"https?://.*maps\?q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)")
     lat_list, lng_list = [], []
     for v in df_raw.get("maps_link", pd.Series([""] * len(df_raw))):
@@ -279,19 +272,53 @@ def _legend_html():
     )
 
 # ==========================================================
-# LOAD ALL (para visor/graficas)
+# FORM 1 DASHBOARD UTILS
+# ==========================================================
+def extract_all_structures(df1: pd.DataFrame) -> pd.DataFrame:
+    """Devuelve tabla normalizada: provincia, canton, barrio, estructura (una por fila) + maps_link + date."""
+    if df1.empty:
+        return pd.DataFrame(columns=["provincia","canton","barrio","estructura","maps_link","date","lat","lng"])
+    rows = []
+    for _, r in df1.iterrows():
+        prov = str(r.get("provincia","")).strip()
+        cant = str(r.get("canton","")).strip()
+        barr = str(r.get("barrio","")).strip()
+        date = str(r.get("date","")).strip()
+        maps_link = str(r.get("maps_link","")).strip()
+        lat = r.get("lat")
+        lng = r.get("lng")
+        for i in range(1, 12):
+            val = str(r.get(f"estructura_{i}", "")).strip()
+            if val and val.lower() != "nan":
+                rows.append({
+                    "provincia": prov,
+                    "canton": cant,
+                    "barrio": barr,
+                    "estructura": val,
+                    "maps_link": maps_link,
+                    "date": date,
+                    "lat": lat,
+                    "lng": lng
+                })
+    return pd.DataFrame(rows)
+
+def parse_date_safe(series: pd.Series) -> pd.Series:
+    return pd.to_datetime(series, errors="coerce", dayfirst=True)
+
+# ==========================================================
+# LOAD ALL (para visor y gráficas globales)
 # ==========================================================
 def load_all_data() -> pd.DataFrame:
     dfs = []
 
-    # Form 1 (Excel)
+    # Form 1
     df1 = read_df_generic(FORM1_SHEET, FORM1_HEADERS).copy()
     df1["form_label"] = FORM1_TITLE
-    # Normalizamos un campo "factores" para visor/filtros (no existe en excel)
-    df1["factores"] = "(Excel – estructuras)"
+    # Normalizamos campo "factores" para que el visor pueda filtrar/contar
+    df1["factores"] = "(Form1 – estructuras)"
     dfs.append(df1)
 
-    # Forms 2..5 (survey)
+    # Forms 2..5
     for label in ["Formulario 2", "Formulario 3", "Formulario 4", "Formulario 5"]:
         ws_name = FORM_SHEETS[label]
         df = read_df_generic(ws_name, SURVEY_HEADERS).copy()
@@ -300,31 +327,20 @@ def load_all_data() -> pd.DataFrame:
 
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
-def parse_date_safe(series: pd.Series) -> pd.Series:
-    return pd.to_datetime(series, errors="coerce", dayfirst=True)
-
 # ==========================================================
 # UI
 # ==========================================================
 st.title("📍 Costa Rica — Formularios + Visor + Gráficas")
-st.caption("Cada pestaña guarda en su propia hoja (Google Sheets). El Form 1 replica columnas del Excel.")
+st.caption("Cada pestaña guarda en su hoja. Formulario 1 ya está adaptado a Provincia/Cantón/Barrio + estructuras.")
 
 tab_labels = list(FORM_SHEETS.keys()) + ["Visor (capas)", "📊 Gráficas"]
 tabs = st.tabs(tab_labels)
 
 # ==========================================================
-# FORM 1 — EXCEL
+# FORM 1 — ACTUALIZADO
 # ==========================================================
-def next_n_for_form1() -> int:
-    df = read_df_generic(FORM1_SHEET, FORM1_HEADERS)
-    if df.empty or "n" not in df.columns:
-        return 1
-    nums = pd.to_numeric(df["n"], errors="coerce").dropna()
-    return int(nums.max() + 1) if len(nums) else 1
-
 with tabs[0]:
     st.subheader(f"{FORM1_TITLE} — Guardando en hoja: {FORM1_SHEET}")
-    st.caption("Estructura replicada del Excel. Nota: En el Excel el texto 'Fuente: La Extra' está en el encabezado.")
 
     style = st.selectbox("Estilo de mapa", MAP_STYLE_OPTIONS, index=0, key="style_form1")
 
@@ -370,14 +386,14 @@ with tabs[0]:
             st.rerun()
 
     with right:
-        st.markdown("### Formulario (columnas del Excel)")
+        st.markdown("### Formulario (Provincia / Cantón / Barrio opcional + estructuras)")
 
         with st.form("form_excel_1", clear_on_submit=True):
-            provincia = st.text_input("Provincia * (ej: SAN JOSE, ALAJUELA, etc.)")
-            n_val = st.number_input("N° (auto)", min_value=1, value=next_n_for_form1(), step=1)
+            provincia = st.text_input("Provincia *")
             canton = st.text_input("Cantón *")
+            barrio = st.text_input("Barrio (opcional)")
 
-            st.markdown("#### Estructuras criminales indicadas en territorio (slots del Excel)")
+            st.markdown("#### Estructuras / Pandillas (podés llenar varias)")
             e1 = st.text_input("Estructura 1")
             e2 = st.text_input("Estructura 2")
             e3 = st.text_input("Estructura 3")
@@ -400,14 +416,20 @@ with tabs[0]:
                 errs.append("Provincia es requerida.")
             if not canton.strip():
                 errs.append("Cantón es requerido.")
+
+            # al menos una estructura (si querés permitir 0, quitá esto)
+            estructuras = [e1,e2,e3,e4,e5,e6,e7,e8,e9,e10,e11]
+            if not any([str(x).strip() for x in estructuras]):
+                errs.append("Agrega al menos **una estructura/pandilla** (Estructura 1..11).")
+
             if errs:
                 st.error("• " + "\n• ".join(errs))
             else:
                 maps_url = f"https://www.google.com/maps?q={lat_val},{lng_val}"
                 row = {
                     "provincia": provincia.strip(),
-                    "n": int(n_val),
                     "canton": canton.strip(),
+                    "barrio": (barrio or "").strip(),
                     "estructura_1": e1.strip(),
                     "estructura_2": e2.strip(),
                     "estructura_3": e3.strip(),
@@ -424,16 +446,17 @@ with tabs[0]:
                 }
                 try:
                     append_row_generic(FORM1_SHEET, FORM1_HEADERS, row)
-                    st.success("✅ Registro guardado en Formulario 1 (Excel).")
+                    st.success("✅ Registro guardado en Formulario 1.")
                     st.cache_data.clear()
                     st.rerun()
                 except Exception as e:
                     st.error(f"❌ No se pudo guardar.\n\n{e}")
 
     st.divider()
-    st.markdown("#### Vista de datos (hoja del Formulario 1)")
+    st.markdown("## 📋 Datos registrados (Formulario 1)")
     df1 = read_df_generic(FORM1_SHEET, FORM1_HEADERS)
-    st.dataframe(df1[FORM1_HEADERS].tail(200), use_container_width=True)
+    st.dataframe(df1[FORM1_HEADERS].tail(300), use_container_width=True)
+
     st.download_button(
         "⬇️ Descargar CSV (Formulario 1)",
         data=df1[FORM1_HEADERS].to_csv(index=False).encode("utf-8"),
@@ -441,6 +464,96 @@ with tabs[0]:
         mime="text/csv",
         key="dl_form1"
     )
+
+    # ===============================
+    # DASHBOARD FORM 1
+    # ===============================
+    st.divider()
+    st.markdown("## 📊 Dashboard (Formulario 1) — filtros y gráficas")
+
+    df_struct = extract_all_structures(df1)
+
+    if df_struct.empty:
+        st.info("Aún no hay estructuras registradas para graficar.")
+    else:
+        colf1, colf2, colf3 = st.columns([0.34, 0.33, 0.33])
+
+        provincias = sorted([p for p in df_struct["provincia"].dropna().unique() if str(p).strip()])
+        with colf1:
+            f_prov = st.selectbox("Provincia", options=["(Todas)"] + provincias, index=0, key="f1_prov")
+
+        df_tmp = df_struct.copy()
+        if f_prov != "(Todas)":
+            df_tmp = df_tmp[df_tmp["provincia"] == f_prov]
+
+        cantones = sorted([c for c in df_tmp["canton"].dropna().unique() if str(c).strip()])
+        with colf2:
+            f_cant = st.selectbox("Cantón", options=["(Todos)"] + cantones, index=0, key="f1_cant")
+
+        if f_cant != "(Todos)":
+            df_tmp = df_tmp[df_tmp["canton"] == f_cant]
+
+        # filtro por nombre de pandilla/estructura (buscador)
+        with colf3:
+            f_pand = st.text_input("Buscar pandilla/estructura (contiene)", value="", key="f1_pand")
+
+        if f_pand.strip():
+            df_tmp = df_tmp[df_tmp["estructura"].str.contains(f_pand.strip(), case=False, na=False)]
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Registros (estructuras)", len(df_tmp))
+        m2.metric("Pandillas únicas", df_tmp["estructura"].nunique())
+        m3.metric("Cantones en vista", df_tmp["canton"].nunique())
+
+        # Conteo por estructura (Top)
+        top_n = st.slider("Top N pandillas", 5, 30, 10, key="f1_topn")
+        counts = (
+            df_tmp["estructura"]
+            .value_counts()
+            .head(top_n)
+            .reset_index()
+        )
+        counts.columns = ["estructura", "conteo"]
+
+        st.markdown("### 🔝 Top pandillas/estructuras (Barras)")
+        fig_bar = px.bar(
+            counts.sort_values("conteo", ascending=True),
+            x="conteo", y="estructura", orientation="h", text="conteo",
+            template="plotly_dark",
+            title="Top pandillas/estructuras por frecuencia"
+        )
+        fig_bar.update_traces(textposition="outside", cliponaxis=False)
+        fig_bar.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        st.markdown("### 🍩 Distribución (Donut)")
+        fig_donut = px.pie(
+            counts,
+            names="estructura",
+            values="conteo",
+            hole=0.6,
+            template="plotly_dark",
+            title="Distribución (Top)"
+        )
+        fig_donut.update_traces(
+            textinfo="percent",
+            textposition="inside",
+            hovertemplate="<b>%{label}</b><br>Conteo: %{value}<br>%{percent}<extra></extra>",
+        )
+        fig_donut.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
+        st.plotly_chart(fig_donut, use_container_width=True)
+
+        st.markdown("### 🧊 Capas (Sunburst) — Provincia → Cantón → Pandilla")
+        grp = df_tmp.groupby(["provincia","canton","estructura"]).size().reset_index(name="conteo")
+        fig_sun = px.sunburst(
+            grp,
+            path=["provincia","canton","estructura"],
+            values="conteo",
+            template="plotly_dark",
+            title="Capas: Provincia → Cantón → Pandilla"
+        )
+        fig_sun.update_layout(height=600, margin=dict(l=10, r=10, t=60, b=10))
+        st.plotly_chart(fig_sun, use_container_width=True)
 
 # ==========================================================
 # FORMULARIOS 2..5 — ENCUESTA
@@ -575,7 +688,6 @@ with tabs[-2]:
         if layer != "(Todos)":
             dfv = dfv[dfv["form_label"] == layer]
 
-        # filtro por "factores" si existe (Form1 trae "(Excel – estructuras)")
         factores_unicos = sorted([f for f in dfv.get("factores", pd.Series([])).dropna().unique() if str(f).strip()])
         factor_sel = st.selectbox("Filtrar por factor (opcional)", options=["(Todos)"] + factores_unicos, index=0)
         if factor_sel != "(Todos)" and "factores" in dfv.columns:
@@ -587,8 +699,6 @@ with tabs[-2]:
         if visor_style != "Esri Satélite":
             _add_tile_by_name(m, visor_style)
         LocateControl(auto_start=False).add_to(m)
-
-        # leyenda solo aplica a encuesta (igual la dejamos)
         m.get_root().html.add_child(folium.Element(_legend_html()))
 
         group = (MarkerCluster(name="Marcadores", overlay=True, control=True, pane="markers")
@@ -607,23 +717,22 @@ with tabs[-2]:
 
             form_label = r.get("form_label", "")
             factor = r.get("factores", "")
-            # color por factor solo si es encuesta; si es Form1, color fijo
             color = FACTOR_COLORS.get(factor, "#2dd4bf") if factor in FACTOR_COLORS else "#2dd4bf"
 
-            # Popup: si es Form 1, mostramos estructuras
             if form_label == FORM1_TITLE:
                 estructuras = []
-                for k in [f"estructura_{i}" for i in range(1, 12)]:
-                    v = str(r.get(k, "")).strip()
+                for i in range(1, 12):
+                    v = str(r.get(f"estructura_{i}", "")).strip()
                     if v and v.lower() != "nan":
                         estructuras.append(v)
                 estructuras_txt = "<br>".join([f"• {x}" for x in estructuras]) if estructuras else "(sin estructuras)"
                 popup = (
                     f"<b>Formulario:</b> {FORM1_TITLE}<br>"
                     f"<b>Provincia:</b> {r.get('provincia','')}<br>"
-                    f"<b>N:</b> {r.get('n','')}<br>"
                     f"<b>Cantón:</b> {r.get('canton','')}<br>"
+                    f"<b>Barrio:</b> {r.get('barrio','')}<br>"
                     f"<b>Estructuras:</b><br>{estructuras_txt}<br>"
+                    f"<b>Fecha:</b> {r.get('date','')}<br>"
                     f"<b>Maps:</b> <a href='{r.get('maps_link','')}' target='_blank'>Abrir</a>"
                 )
             else:
@@ -661,7 +770,6 @@ with tabs[-2]:
 
         folium.LayerControl(collapsed=False).add_to(m)
 
-        # ✅ SIN PARPADEO
         st_folium(m, height=560, use_container_width=True, key="visor_map", returned_objects=[])
 
         if omitidos:
@@ -669,9 +777,8 @@ with tabs[-2]:
 
         st.divider()
         st.markdown("#### Tabla (según filtros)")
-        # Mostramos columnas comunes + las del Excel cuando aplica
         if layer == FORM1_TITLE:
-            show_cols = ["provincia","n","canton"] + [f"estructura_{i}" for i in range(1, 12)] + ["maps_link","date"]
+            show_cols = ["provincia","canton","barrio"] + [f"estructura_{i}" for i in range(1, 12)] + ["maps_link","date"]
         elif layer == "(Todos)":
             show_cols = ["form_label","date","barrio","factores","maps_link"]
         else:
@@ -689,14 +796,12 @@ with tabs[-2]:
         )
 
 # ==========================================================
-# GRÁFICAS
+# GRÁFICAS (global)
 # ==========================================================
 with tabs[-1]:
-    st.subheader("📊 Gráficas (Plus) — Resumen visual con filtros")
+    st.subheader("📊 Gráficas (Plus) — Resumen global con filtros")
 
-    PLOT_TEMPLATE = "plotly_dark"
     df_all = load_all_data()
-
     if df_all.empty:
         st.info("Aún no hay registros para graficar.")
     else:
@@ -715,7 +820,6 @@ with tabs[-1]:
         if factor_sel != "(Todos)" and "factores" in dfg.columns:
             dfg = dfg[dfg["factores"] == factor_sel]
 
-        # Fechas
         if "date" in dfg.columns:
             dfg["date_dt"] = parse_date_safe(dfg["date"])
             min_d = dfg["date_dt"].min()
@@ -730,9 +834,6 @@ with tabs[-1]:
         if dfg.empty:
             st.warning("No hay datos con esos filtros.")
         else:
-            st.divider()
-
-            # Conteo por "factores" (Form1 cuenta como "(Excel – estructuras)")
             counts = (
                 dfg["factores"].fillna("").replace("", pd.NA).dropna()
                 .value_counts().head(top_n).reset_index()
@@ -742,7 +843,8 @@ with tabs[-1]:
             fig_bar = px.bar(
                 counts.sort_values("conteo", ascending=True),
                 x="conteo", y="categoria", orientation="h", text="conteo",
-                title="Frecuencias (categoría / factor)", template=PLOT_TEMPLATE
+                template="plotly_dark",
+                title="Frecuencias (categoría / factor)"
             )
             fig_bar.update_traces(textposition="outside", cliponaxis=False)
             fig_bar.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
@@ -750,16 +852,17 @@ with tabs[-1]:
 
             fig_donut = px.pie(
                 counts, names="categoria", values="conteo", hole=0.6,
-                title="Distribución", template=PLOT_TEMPLATE
+                template="plotly_dark", title="Distribución"
             )
             fig_donut.update_traces(textinfo="percent", textposition="inside")
             fig_donut.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
             st.plotly_chart(fig_donut, use_container_width=True)
 
             grp = dfg.groupby(["form_label", "factores"]).size().reset_index(name="conteo")
-            fig_sun = px.sunburst(grp, path=["form_label", "factores"], values="conteo",
-                                  title="Capas: Formulario → Categoría/Factor",
-                                  template=PLOT_TEMPLATE)
+            fig_sun = px.sunburst(
+                grp, path=["form_label", "factores"], values="conteo",
+                template="plotly_dark", title="Capas: Formulario → Categoría/Factor"
+            )
             fig_sun.update_layout(height=560, margin=dict(l=10, r=10, t=60, b=10))
             st.plotly_chart(fig_sun, use_container_width=True)
 
