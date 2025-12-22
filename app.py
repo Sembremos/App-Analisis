@@ -216,61 +216,22 @@ def read_df_generic(ws_name: str, headers: list) -> pd.DataFrame:
     return df
 # ==========================================================
 # PARTE 3/10
-# MAPA: utilidades + capas administrativas (hover)
-# FIX: Si GeoJSON trae códigos (CR-XXX), mostrar NOMBRES reales
+# Mapa: utilidades + capas administrativas (FIX del AssertionError)
 # ==========================================================
 
-import math
-import json
-from urllib.request import urlopen
-
-# --- Catálogo (OPCIÓN RECOMENDADA): hoja en Sheets con mapping ---
-# Crea una pestaña en tu Google Sheet llamada: "Catalogos_Admin"
-# con estas columnas:
-# tipo | codigo | nombre
-# canton | CR-CTU | Turrialba
-# provincia | CR-C | Cartago
-ADMIN_CATALOG_SHEET = "Catalogos_Admin"
-
-@st.cache_data(show_spinner=False, ttl=300)
-def load_admin_catalog() -> dict:
-    """
-    Lee el catálogo desde Google Sheets (Catalogos_Admin)
-    Retorna dict:
-      {
-        "canton": {"CR-CTU": "Turrialba", ...},
-        "provincia": {"CR-C": "Cartago", ...}
-      }
-    """
-    try:
-        sh = _ws().spreadsheet   # reutilizamos el mismo client/spreadsheet
-        ws_cat = sh.worksheet(ADMIN_CATALOG_SHEET)
-        rows = ws_cat.get_all_records()
-        out = {"canton": {}, "provincia": {}}
-        for r in rows:
-            t = str(r.get("tipo", "")).strip().lower()
-            c = str(r.get("codigo", "")).strip()
-            n = str(r.get("nombre", "")).strip()
-            if t in out and c and n:
-                out[t][c] = n
-        return out
-    except Exception:
-        # Si no existe la hoja todavía, no rompemos nada
-        return {"canton": {}, "provincia": {}}
-
-
 def _jitter(idx: int, base: float = 0.00008) -> float:
+    """Pequeño desplazamiento para evitar que puntos exactos se monten."""
     random.seed(idx)
     return (random.random() - 0.5) * base
 
-
 def _add_panes(m):
+    """Panes para controlar capas y z-index (admin debajo de marcadores)."""
     folium.map.CustomPane("admin", z_index=250).add_to(m)
     folium.map.CustomPane("markers", z_index=400).add_to(m)
     folium.map.CustomPane("heatmap", z_index=650).add_to(m)
 
-
 def _add_tile_by_name(m, style_name: str):
+    """Agrega base map. Esri Satélite siempre soportado."""
     if style_name == "Esri Satélite":
         folium.TileLayer(
             tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -292,8 +253,8 @@ def _add_tile_by_name(m, style_name: str):
             control=True
         ).add_to(m)
 
-
 def make_pin_icon(color_hex: str):
+    """Pin tipo Google (BeautifyIcon)."""
     return BeautifyIcon(
         icon=DEFAULT_PIN_ICON,
         icon_shape="marker",
@@ -302,79 +263,42 @@ def make_pin_icon(color_hex: str):
         text_color="#fff"
     )
 
-
 @st.cache_data(show_spinner=False)
 def _load_geojson(url: str) -> dict:
+    """Carga un geojson desde URL y lo cachea (evita re-descargas constantes)."""
     with urlopen(url) as r:
         return json.loads(r.read().decode("utf-8"))
 
-
-def _pick_prop_key(geojson: dict, candidates: list[str], prefer_text=True):
+def _pick_prop_key(geojson: dict, candidates: list[str]):
+    """
+    Escoge el nombre correcto del campo para tooltip.
+    FIX: Folium exige fields como list/tuple, nunca None.
+    """
     try:
         props = (geojson.get("features", [{}])[0].get("properties", {}) or {})
-        if not props:
-            return None
-
         for k in candidates:
             if k in props and props.get(k) is not None:
-                v = props.get(k)
-                if prefer_text and isinstance(v, (int, float)):
-                    continue
                 return k
-
-        if prefer_text:
-            for k, v in props.items():
-                if isinstance(v, str) and len(v.strip()) >= 3:
-                    return k
-
-        return list(props.keys())[0]
+        if props:
+            return list(props.keys())[0]  # fallback: primera propiedad disponible
     except Exception:
-        return None
-
-
-def _enrich_with_nombre_show(geojson: dict, tipo: str, prefer_name_keys: list[str], code_keys: list[str]) -> dict:
-    """
-    Agrega properties['nombre_show'] para tooltip.
-    - Si existe un campo nombre en properties, lo usa.
-    - Si no, busca un campo código (ej CR-CTU) y lo traduce usando el catálogo.
-    """
-    catalog = load_admin_catalog().get(tipo, {})
-
-    # detecta keys
-    name_key = _pick_prop_key(geojson, prefer_name_keys, prefer_text=True)
-    code_key = _pick_prop_key(geojson, code_keys, prefer_text=False)
-
-    for f in geojson.get("features", []):
-        p = f.get("properties", {}) or {}
-        # 1) Si hay nombre real, úsalo
-        if name_key and isinstance(p.get(name_key), str) and p.get(name_key).strip():
-            p["nombre_show"] = p.get(name_key).strip()
-        else:
-            # 2) Si hay código, tradúcelo
-            code_val = str(p.get(code_key, "")).strip() if code_key else ""
-            if code_val and code_val in catalog:
-                p["nombre_show"] = catalog[code_val]
-            else:
-                # 3) fallback
-                p["nombre_show"] = code_val or "(sin nombre)"
-        f["properties"] = p
-
-    return geojson
-
+        pass
+    return None
 
 def add_admin_layers(m: folium.Map, show_provincias=True, show_cantones=True):
     """
-    Capas admin con hover:
-    - Tooltip SIEMPRE usa 'nombre_show' (ya viene enriquecido)
-    """
+    Agrega capas administrativas con hover (tooltip):
+    - Provincias
+    - Cantones
 
+    ✅ FIX aplicado: NO pasamos fields=None a GeoJsonTooltip (causaba AssertionError).
+    """
     if show_provincias:
         prov = _load_geojson(CR_PROVINCIAS_GEOJSON_URL)
-        prov = _enrich_with_nombre_show(
+
+        prov_key = _pick_prop_key(
             prov,
-            tipo="provincia",
-            prefer_name_keys=["NOM_PROV", "provincia", "Provincia", "PROVINCIA", "name", "NAME", "nombre", "NOMBRE"],
-            code_keys=["codigo", "CODIGO", "id", "ID", "iso", "ISO", "prov_code", "PROV_CODE"]
+            ["provincia", "Provincia", "PROVINCIA", "name", "NAME", "nombre", "NOMBRE"]
         )
 
         gj = folium.GeoJson(
@@ -384,16 +308,23 @@ def add_admin_layers(m: folium.Map, show_provincias=True, show_cantones=True):
             style_function=lambda f: {"color": "#00E5FF", "weight": 2, "fillOpacity": 0.0},
             highlight_function=lambda f: {"weight": 4, "color": "#00E5FF"},
         )
-        gj.add_child(folium.GeoJsonTooltip(fields=["nombre_show"], aliases=["Provincia:"], sticky=True))
+
+        if prov_key:
+            gj.add_child(
+                folium.GeoJsonTooltip(
+                    fields=[prov_key],   # ✅ SIEMPRE LIST
+                    aliases=["Provincia:"],
+                    sticky=True
+                )
+            )
         gj.add_to(m)
 
     if show_cantones:
         cant = _load_geojson(CR_CANTONES_GEOJSON_URL)
-        cant = _enrich_with_nombre_show(
+
+        canton_key = _pick_prop_key(
             cant,
-            tipo="canton",
-            prefer_name_keys=["NOM_CANT", "canton", "Cantón", "CANTON", "name", "NAME", "nombre", "NOMBRE"],
-            code_keys=["codigo", "CODIGO", "id", "ID", "iso", "ISO", "canton_id", "CANTON_ID", "code", "CODE"]
+            ["canton", "cantón", "CANTON", "Canton", "name", "NAME", "nombre", "NOMBRE"]
         )
 
         gj2 = folium.GeoJson(
@@ -403,10 +334,33 @@ def add_admin_layers(m: folium.Map, show_provincias=True, show_cantones=True):
             style_function=lambda f: {"color": "#FFFFFF", "weight": 1, "fillOpacity": 0.0},
             highlight_function=lambda f: {"weight": 3, "color": "#FFFFFF"},
         )
-        gj2.add_child(folium.GeoJsonTooltip(fields=["nombre_show"], aliases=["Cantón:"], sticky=True))
+
+        if canton_key:
+            gj2.add_child(
+                folium.GeoJsonTooltip(
+                    fields=[canton_key],  # ✅ SIEMPRE LIST
+                    aliases=["Cantón:"],
+                    sticky=True
+                )
+            )
         gj2.add_to(m)
 
-
+def _legend_html():
+    """Leyenda de factores (para visor)."""
+    items = "".join(
+        f'<div style="display:flex;align-items:flex-start;margin-bottom:6px">'
+        f'<span style="width:12px;height:12px;background:{FACTOR_COLORS.get(f,"#555")};'
+        f'display:inline-block;margin-right:8px;border:1px solid #333;"></span>'
+        f'<span style="font-size:12px;color:#000;line-height:1.2;">{f}</span></div>'
+        for f in FACTORES
+    )
+    return (
+        '<div style="position: fixed; bottom: 20px; right: 20px; z-index:9999; '
+        'background: rgba(255,255,255,0.98); padding:10px; border:1px solid #666; '
+        'border-radius:6px; max-height:320px; overflow:auto; width:360px; color:#000;">'
+        '<div style="font-weight:700; margin-bottom:6px; color:#000;">Leyenda – Factores</div>'
+        f'{items}</div>'
+    )
 # ==========================================================
 # PARTE 4/10
 # Utilidades para Formulario 1 (estructuras) + carga general
@@ -948,8 +902,6 @@ with tabs[-1]:
             fig_donut.update_traces(textinfo="percent", textposition="inside")
             fig_donut.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
             st.plotly_chart(fig_donut, use_container_width=True)
-
-
 
 
 
