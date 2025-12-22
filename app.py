@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 # Streamlit — 5 Formularios (5 hojas) + Visor (capas) + Gráficas — Google Sheets como DB
-# TODOS los formularios arrancan con el MISMO mapa base: ESRI SATÉLITE.
-# Dentro de cada formulario podés cambiar el estilo desde un selector.
+# ✅ Todos los formularios arrancan con ESRI Satélite (y podés cambiar estilo en cada tab)
+# ✅ Visor SIN parpadeo (returned_objects=[] + jitter determinístico)
+# ✅ Gráficas más pro (tema oscuro, barras horizontales, donut, sunburst “capas”)
 #
 # Requisitos: streamlit, pandas, gspread, google-auth, folium, streamlit-folium, plotly
 # Secrets: st.secrets["gcp_service_account"] con el JSON del service account
@@ -63,7 +64,7 @@ FACTORES = [
     "Otro: especificar.",
 ]
 
-# Paleta (color por factor) — usada en marcadores
+# Paleta (color por factor) — usada en marcadores/leyenda
 _PALETTE = [
     "#e41a1c","#377eb8","#4daf4a","#984ea3","#ff7f00","#ffff33",
     "#a65628","#f781bf","#999999","#1b9e77","#d95f02","#7570b3",
@@ -208,6 +209,7 @@ def read_df(ws_name: str) -> pd.DataFrame:
 # MAP UTILS
 # ==========================================================
 def _jitter(idx: int, base: float = 0.00008) -> float:
+    # Determinístico (evita que el mapa “cambie” y pestañee)
     random.seed(idx)
     return (random.random() - 0.5) * base
 
@@ -260,7 +262,7 @@ def _legend_html():
     )
 
 # ==========================================================
-# DATA UTILS (para gráficas)
+# DATA UTILS (para visor y gráficas)
 # ==========================================================
 def load_all_data() -> pd.DataFrame:
     dfs = []
@@ -271,11 +273,10 @@ def load_all_data() -> pd.DataFrame:
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
 def parse_date_safe(series: pd.Series) -> pd.Series:
-    # formato esperado: dd-mm-YYYY, pero tolerante
     return pd.to_datetime(series, errors="coerce", dayfirst=True)
 
 # ==========================================================
-# UI – TABS
+# UI – TÍTULO & TABS
 # ==========================================================
 st.title("📍 Costa Rica — 5 Formularios + Visor + Gráficas")
 st.caption("DB en Google Sheets. 5 formularios guardan en hojas distintas. Visor por capas + pestaña de gráficas.")
@@ -284,23 +285,21 @@ tab_labels = list(FORM_SHEETS.keys()) + ["Visor (capas)", "📊 Gráficas"]
 tabs = st.tabs(tab_labels)
 
 # ==========================================================
-# 5 FORMULARIOS
+# FORMULARIOS
 # ==========================================================
 def render_form(form_label: str):
     ws_name = FORM_SHEETS[form_label]
     st.subheader(f"{form_label} — Guardando en hoja: {ws_name}")
 
-    # Selector de estilo (cada tab decide como verlo)
     style = st.selectbox(
         "Estilo de mapa",
         options=MAP_STYLE_OPTIONS,
-        index=0,  # siempre arranca en ESRI
+        index=0,  # ESRI por defecto
         key=f"style_{ws_name}"
     )
 
     left, right = st.columns([0.58, 0.42], gap="large")
 
-    # ---------- MAPA (clic para lat/lng) ----------
     with left:
         st.markdown("### Selecciona un punto en el mapa")
         st.caption("Usa el ícono 🎯 (Localizar) si querés centrarte donde estás, luego haz clic para marcar.")
@@ -315,7 +314,7 @@ def render_form(form_label: str):
         m = folium.Map(location=center, zoom_start=CR_ZOOM, control_scale=True, tiles=None)
         _add_panes(m)
 
-        # Siempre incluye ESRI + el estilo elegido
+        # ESRI siempre + estilo elegido (si es distinto)
         _add_tile_by_name(m, "Esri Satélite")
         if style != "Esri Satélite":
             _add_tile_by_name(m, style)
@@ -331,6 +330,8 @@ def render_form(form_label: str):
             ).add_to(m)
 
         folium.LayerControl(collapsed=False).add_to(m)
+
+        # EN FORMULARIOS sí ocupamos eventos (last_clicked)
         map_ret = st_folium(m, height=520, use_container_width=True, key=f"map_{ws_name}")
 
         if map_ret and map_ret.get("last_clicked"):
@@ -348,7 +349,6 @@ def render_form(form_label: str):
             st.session_state.pop(key_clicked, None)
             st.rerun()
 
-    # ---------- FORMULARIO ----------
     with right:
         st.markdown("### Formulario de encuesta")
         with st.form(f"form_{ws_name}", clear_on_submit=True):
@@ -372,7 +372,7 @@ def render_form(form_label: str):
                 payload = {
                     "date": datetime.now(TZ).strftime("%d-%m-%Y"),
                     "barrio": (barrio or "").strip(),
-                    "factores": factores_sel,  # lista -> se guardan N filas
+                    "factores": factores_sel,
                     "delitos_relacionados": (delitos or "").strip(),
                     "ligado_estructura": (ligado or "").strip(),
                     "nombre_estructura": (nombre_estructura or "").strip(),
@@ -400,13 +400,13 @@ def render_form(form_label: str):
         key=f"dl_{ws_name}"
     )
 
-# Render de 5 tabs
+# Render 5 tabs
 for i, form_label in enumerate(FORM_SHEETS.keys()):
     with tabs[i]:
         render_form(form_label)
 
 # ==========================================================
-# TAB 6 — VISOR POR CAPAS (ver 1..5 o todos)
+# VISOR (capas) — SIN PARPADEO
 # ==========================================================
 with tabs[-2]:
     st.subheader("🗺️ Visor (capas) — Ver datos por formulario o todo junto")
@@ -481,8 +481,9 @@ with tabs[-2]:
                 f"<b>Maps:</b> <a href='{r.get('maps_link','')}' target='_blank'>Abrir</a>"
             )
 
-            jlat = float(lat) + (random.random() - 0.5) * 0.00008
-            jlng = float(lng) + (random.random() - 0.5) * 0.00008
+            # ✅ jitter determinístico (no cambia cada rerun)
+            jlat = float(lat) + _jitter(idx)
+            jlng = float(lng) + _jitter(idx + 101)
 
             folium.CircleMarker(
                 [jlat, jlng],
@@ -503,14 +504,23 @@ with tabs[-2]:
             ).add_to(folium.FeatureGroup(name="Mapa de calor", overlay=True, control=True, pane="heatmap").add_to(m))
 
         folium.LayerControl(collapsed=False).add_to(m)
-        st_folium(m, height=560, use_container_width=True, key="visor_map")
+
+        # ✅ Evita bucle de reruns por eventos del mapa
+        st_folium(
+            m,
+            height=560,
+            use_container_width=True,
+            key="visor_map",
+            returned_objects=[]
+        )
 
         if omitidos:
             st.caption(f"({omitidos} registro(s) omitidos por coordenadas inválidas)")
 
         st.divider()
         st.markdown("#### Tabla (según filtros)")
-        show_cols = ["form_label", "date","barrio","factores","delitos_relacionados","ligado_estructura","nombre_estructura","observaciones","maps_link"]
+        show_cols = ["form_label", "date","barrio","factores","delitos_relacionados",
+                     "ligado_estructura","nombre_estructura","observaciones","maps_link"]
         show_df = dfv[show_cols].copy()
         st.dataframe(show_df, use_container_width=True)
 
@@ -522,17 +532,18 @@ with tabs[-2]:
         )
 
 # ==========================================================
-# TAB 7 — GRÁFICAS (PLUS)
+# GRÁFICAS (Plus) — Pro / “capas”
 # ==========================================================
 with tabs[-1]:
     st.subheader("📊 Gráficas (Plus) — Resumen visual con filtros")
     st.caption("No modifica nada: solo lee los datos de las 5 hojas y construye gráficos filtrables.")
 
+    PLOT_TEMPLATE = "plotly_dark"
+
     df_all = load_all_data()
     if df_all.empty:
         st.info("Aún no hay registros para graficar.")
     else:
-        # Filtros principales
         c1, c2, c3 = st.columns([0.35, 0.35, 0.30])
         with c1:
             layer = st.selectbox(
@@ -558,7 +569,6 @@ with tabs[-1]:
         if factor_sel != "(Todos)":
             dfg = dfg[dfg["factores"] == factor_sel]
 
-        # Fechas (si hay)
         dfg["date_dt"] = parse_date_safe(dfg["date"])
         min_d = dfg["date_dt"].min()
         max_d = dfg["date_dt"].max()
@@ -570,13 +580,13 @@ with tabs[-1]:
                 key="g_date"
             )
             if isinstance(r, tuple) and len(r) == 2:
-                d1, d2 = pd.to_datetime(r[0]), pd.to_datetime(r[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                d1 = pd.to_datetime(r[0])
+                d2 = pd.to_datetime(r[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
                 dfg = dfg[(dfg["date_dt"] >= d1) & (dfg["date_dt"] <= d2)]
 
         if dfg.empty:
             st.warning("No hay datos con esos filtros.")
         else:
-            # Conteo de factores
             counts = (
                 dfg["factores"]
                 .fillna("")
@@ -588,7 +598,6 @@ with tabs[-1]:
             )
             counts.columns = ["factor", "conteo"]
 
-            # Métricas rápidas
             m1, m2, m3 = st.columns(3)
             m1.metric("Registros (filas)", len(dfg))
             m2.metric("Factores únicos", dfg["factores"].nunique(dropna=True))
@@ -596,30 +605,65 @@ with tabs[-1]:
 
             st.divider()
 
-            # --- Gráfico 1: Barras (tipo imagen)
+            # 1) Barras pro horizontales
             st.markdown("### 📌 Top factores (Barras)")
+            counts2 = counts.sort_values("conteo", ascending=True)
             fig_bar = px.bar(
-                counts,
-                x="factor",
-                y="conteo",
+                counts2,
+                x="conteo",
+                y="factor",
+                orientation="h",
                 text="conteo",
-                title="Top factores por frecuencia"
+                title="Top factores por frecuencia",
+                template=PLOT_TEMPLATE
             )
-            fig_bar.update_layout(xaxis_title="", yaxis_title="Cantidad", xaxis_tickangle=-25)
+            fig_bar.update_traces(textposition="outside", cliponaxis=False)
+            fig_bar.update_layout(
+                xaxis_title="Cantidad",
+                yaxis_title="",
+                height=520,
+                margin=dict(l=10, r=10, t=60, b=10),
+            )
             st.plotly_chart(fig_bar, use_container_width=True)
 
-            # --- Gráfico 2: Donut (tipo imagen)
+            # 2) Donut pro
             st.markdown("### 🍩 Distribución (Donut)")
-            fig_pie = px.pie(
+            fig_donut = px.pie(
                 counts,
                 names="factor",
                 values="conteo",
-                hole=0.55,
-                title="Distribución de los factores (Top)"
+                hole=0.60,
+                title="Distribución de factores (Top)",
+                template=PLOT_TEMPLATE
             )
-            st.plotly_chart(fig_pie, use_container_width=True)
+            fig_donut.update_traces(
+                textposition="inside",
+                textinfo="percent",
+                hovertemplate="<b>%{label}</b><br>Conteo: %{value}<br>%{percent}<extra></extra>",
+                marker=dict(line=dict(width=1, color="rgba(255,255,255,0.25)"))
+            )
+            fig_donut.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
+            st.plotly_chart(fig_donut, use_container_width=True)
 
-            # --- Gráfico 3 (extra): Ligado a estructura (Sí/No)
+            # 3) “Capas” tipo 3D (Sunburst)
+            st.markdown("### 🧊 Vista tipo capas (Sunburst) — Profesional")
+            dfh = dfg.copy()
+            dfh["barrio"] = dfh["barrio"].fillna("Sin barrio").replace("", "Sin barrio")
+            dfh["factores"] = dfh["factores"].fillna("Sin factor").replace("", "Sin factor")
+            dfh["form_label"] = dfh["form_label"].fillna("Sin formulario")
+
+            grp = dfh.groupby(["form_label", "factores"]).size().reset_index(name="conteo")
+            fig_sun = px.sunburst(
+                grp,
+                path=["form_label", "factores"],
+                values="conteo",
+                title="Capas: Formulario → Factor",
+                template=PLOT_TEMPLATE
+            )
+            fig_sun.update_layout(height=560, margin=dict(l=10, r=10, t=60, b=10))
+            st.plotly_chart(fig_sun, use_container_width=True)
+
+            # 4) Ligado a estructura
             st.markdown("### 🧩 Ligado a estructura (Sí/No)")
             by_struct = (
                 dfg["ligado_estructura"]
@@ -629,11 +673,26 @@ with tabs[-1]:
                 .reset_index()
             )
             by_struct.columns = ["respuesta", "conteo"]
-            fig_struct = px.bar(by_struct, x="respuesta", y="conteo", text="conteo", title="Registros por respuesta")
-            fig_struct.update_layout(xaxis_title="", yaxis_title="Cantidad")
+
+            fig_struct = px.bar(
+                by_struct,
+                x="respuesta",
+                y="conteo",
+                text="conteo",
+                title="Registros por respuesta",
+                template=PLOT_TEMPLATE
+            )
+            fig_struct.update_traces(textposition="outside", cliponaxis=False)
+            fig_struct.update_layout(
+                xaxis_title="",
+                yaxis_title="Cantidad",
+                height=420,
+                margin=dict(l=10, r=10, t=60, b=10)
+            )
             st.plotly_chart(fig_struct, use_container_width=True)
 
             st.divider()
             st.markdown("#### Datos base (según filtros)")
-            show_cols = ["form_label","date","barrio","factores","delitos_relacionados","ligado_estructura","nombre_estructura","observaciones","maps_link"]
+            show_cols = ["form_label","date","barrio","factores","delitos_relacionados",
+                         "ligado_estructura","nombre_estructura","observaciones","maps_link"]
             st.dataframe(dfg[show_cols].copy(), use_container_width=True)
