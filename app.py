@@ -1,4 +1,8 @@
-# -*- coding: utf-8 -*-
+# ==========================================================
+# PARTE 1/10
+# Imports, configuración general y constantes globales
+# ==========================================================
+
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -15,43 +19,44 @@ from folium.plugins import MarkerCluster, LocateControl, HeatMap, BeautifyIcon
 
 import plotly.express as px
 
-# ==========================================================
-# CONFIG APP
-# ==========================================================
+# ---------- Config de Streamlit ----------
 st.set_page_config(page_title="CR – Formularios + Visor + Gráficas", layout="wide")
+
+# Zona horaria CR
 TZ = ZoneInfo("America/Costa_Rica")
 
-# Tu Google Sheet (DB)
+# ---------- Google Sheets (DB) ----------
 SHEET_ID = "1pCUXSJ_hvQzpzBTaJ-h0ntcdhYwMTyWomxXMjmi7lyg"
 
-# TAB 1 + Hoja 1 (Formulario 1)
+# ---------- Tab 1 / Hoja 1 (Formulario 1) ----------
 FORM1_TITLE = "Pandillas de trafico transnacional Costa Rica 2025"
 FORM1_SHEET = FORM1_TITLE
 
-# Formularios 2..5 (hojas separadas)
+# ---------- Formularios 2..5 (hojas separadas) ----------
 FORM_SHEETS = {
-    FORM1_TITLE: FORM1_SHEET,
+    FORM1_TITLE: FORM1_SHEET,  # Form 1
     "Formulario 2": "Prueba_2",
     "Formulario 3": "Prueba_3",
     "Formulario 4": "Prueba_4",
     "Formulario 5": "Prueba_5",
 }
 
-# ==========================================================
-# SCHEMAS
-# ==========================================================
+# ---------- Esquema Formulario 1 ----------
 FORM1_HEADERS = [
     "provincia", "canton", "barrio",
-    "estructura_1","estructura_2","estructura_3","estructura_4","estructura_5","estructura_6",
-    "estructura_7","estructura_8","estructura_9","estructura_10","estructura_11",
-    "maps_link","date"
+    "estructura_1", "estructura_2", "estructura_3", "estructura_4", "estructura_5",
+    "estructura_6", "estructura_7", "estructura_8", "estructura_9", "estructura_10",
+    "estructura_11",
+    "maps_link", "date"
 ]
 
+# ---------- Esquema Formularios 2..5 ----------
 SURVEY_HEADERS = [
     "date", "barrio", "factores", "delitos_relacionados",
     "ligado_estructura", "nombre_estructura", "observaciones", "maps_link"
 ]
 
+# ---------- Catálogo factores ----------
 FACTORES = [
     "Calles sin iluminación adecuada por la noche.",
     "Calles con poca visibilidad por vegetación, muros o abandono.",
@@ -69,6 +74,7 @@ FACTORES = [
     "Otro: especificar.",
 ]
 
+# Paleta para colorear factores (si querés usarla en puntos)
 _PALETTE = [
     "#e41a1c","#377eb8","#4daf4a","#984ea3","#ff7f00","#ffff33",
     "#a65628","#f781bf","#999999","#1b9e77","#d95f02","#7570b3",
@@ -76,21 +82,27 @@ _PALETTE = [
     "#fb9a99","#cab2d6","#fdbf6f","#b15928"
 ]
 FACTOR_COLORS = {f: _PALETTE[i % len(_PALETTE)] for i, f in enumerate(FACTORES)}
+
+# Icono tipo Google Maps (pin)
 DEFAULT_PIN_ICON = "map-marker-alt"
 
-# ==========================================================
-# MAP CONFIG (Costa Rica general)
-# ==========================================================
+# ---------- Config mapa general Costa Rica ----------
 CR_CENTER = [9.7489, -83.7534]
 CR_ZOOM = 8
-
 MAP_STYLE_OPTIONS = ["Esri Satélite", "Base gris (Carto)", "OpenStreetMap", "Terreno (Stamen)"]
 
-# GeoJSON oficiales comunitarios (Provincias/Cantones) :contentReference[oaicite:1]{index=1}
+# ---------- GeoJSON (Provincias/Cantones) ----------
+# Ojo: son fuentes públicas. Si cambian columnas, el código igual aguanta.
 CR_PROVINCIAS_GEOJSON_URL = "https://raw.githubusercontent.com/maufonsecasdfg/costa-rica-geojson/main/costaricaprovincias.geojson"
 CR_CANTONES_GEOJSON_URL   = "https://raw.githubusercontent.com/maufonsecasdfg/costa-rica-geojson/main/costaricacantones.geojson"
+# ==========================================================
+# PARTE 2/10
+# Google Sheets: conexión + CRUD básico
+# ==========================================================
+
 @st.cache_resource(show_spinner=False)
 def _client():
+    """Crea cliente de gspread usando service account desde st.secrets."""
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
@@ -100,9 +112,14 @@ def _client():
 
 @st.cache_resource(show_spinner=False)
 def _spreadsheet():
+    """Abre el Spreadsheet por ID."""
     return _client().open_by_key(SHEET_ID)
 
 def _get_or_create_ws(ws_name: str, headers: list):
+    """
+    Obtiene una hoja por nombre. Si no existe, la crea.
+    Además asegura que el header (fila 1) tenga al menos las columnas esperadas.
+    """
     sh = _spreadsheet()
     try:
         ws = sh.worksheet(ws_name)
@@ -124,9 +141,11 @@ def _get_or_create_ws(ws_name: str, headers: list):
     return ws
 
 def _headers(ws):
+    """Devuelve el header actual de la hoja (fila 1)."""
     return [h.strip() for h in ws.row_values(1)]
 
 def _split_factores(factores):
+    """Convierte lista o string 'A|B' a lista limpia."""
     if isinstance(factores, list):
         return [x.strip() for x in factores if str(x).strip()]
     if isinstance(factores, str):
@@ -134,11 +153,16 @@ def _split_factores(factores):
     return []
 
 def append_row_generic(ws_name: str, headers: list, row_dict: dict):
+    """Agrega una fila simple a la hoja, respetando el orden de columnas actual."""
     ws = _get_or_create_ws(ws_name, headers)
     cols = _headers(ws)
     ws.append_row([row_dict.get(c, "") for c in cols], value_input_option="USER_ENTERED")
 
 def append_rows_one_per_factor(ws_name: str, data: dict):
+    """
+    Para Formularios 2..5:
+    - si el usuario selecciona N factores, se crean N filas (1 por factor).
+    """
     ws = _get_or_create_ws(ws_name, SURVEY_HEADERS)
     cols = _headers(ws)
 
@@ -165,6 +189,10 @@ def append_rows_one_per_factor(ws_name: str, data: dict):
 
 @st.cache_data(ttl=25, show_spinner=False)
 def read_df_generic(ws_name: str, headers: list) -> pd.DataFrame:
+    """
+    Lee una hoja y crea DF.
+    - Intenta extraer lat/lng desde maps_link (maps?q=lat,lng)
+    """
     ws = _get_or_create_ws(ws_name, headers)
     records = ws.get_all_records()
     if not records:
@@ -186,16 +214,24 @@ def read_df_generic(ws_name: str, headers: list) -> pd.DataFrame:
     df["lng"] = pd.to_numeric(lng_list, errors="coerce")
     df["source_form"] = ws_name
     return df
+# ==========================================================
+# PARTE 3/10
+# Mapa: utilidades + capas administrativas (FIX del AssertionError)
+# ==========================================================
+
 def _jitter(idx: int, base: float = 0.00008) -> float:
+    """Pequeño desplazamiento para evitar que puntos exactos se monten."""
     random.seed(idx)
     return (random.random() - 0.5) * base
 
 def _add_panes(m):
+    """Panes para controlar capas y z-index (admin debajo de marcadores)."""
     folium.map.CustomPane("admin", z_index=250).add_to(m)
     folium.map.CustomPane("markers", z_index=400).add_to(m)
     folium.map.CustomPane("heatmap", z_index=650).add_to(m)
 
 def _add_tile_by_name(m, style_name: str):
+    """Agrega base map. Esri Satélite siempre soportado."""
     if style_name == "Esri Satélite":
         folium.TileLayer(
             tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -218,6 +254,7 @@ def _add_tile_by_name(m, style_name: str):
         ).add_to(m)
 
 def make_pin_icon(color_hex: str):
+    """Pin tipo Google (BeautifyIcon)."""
     return BeautifyIcon(
         icon=DEFAULT_PIN_ICON,
         icon_shape="marker",
@@ -228,56 +265,88 @@ def make_pin_icon(color_hex: str):
 
 @st.cache_data(show_spinner=False)
 def _load_geojson(url: str) -> dict:
+    """Carga un geojson desde URL y lo cachea (evita re-descargas constantes)."""
     with urlopen(url) as r:
         return json.loads(r.read().decode("utf-8"))
 
+def _pick_prop_key(geojson: dict, candidates: list[str]):
+    """
+    Escoge el nombre correcto del campo para tooltip.
+    FIX: Folium exige fields como list/tuple, nunca None.
+    """
+    try:
+        props = (geojson.get("features", [{}])[0].get("properties", {}) or {})
+        for k in candidates:
+            if k in props and props.get(k) is not None:
+                return k
+        if props:
+            return list(props.keys())[0]  # fallback: primera propiedad disponible
+    except Exception:
+        pass
+    return None
+
 def add_admin_layers(m: folium.Map, show_provincias=True, show_cantones=True):
     """
-    Agrega capas administrativas:
-    - Provincias (bordes más gruesos)
-    - Cantones (bordes finos)
-    Muestra nombre en tooltip al pasar el mouse.
-    Fuente GeoJSON: repo público :contentReference[oaicite:2]{index=2}
+    Agrega capas administrativas con hover (tooltip):
+    - Provincias
+    - Cantones
+
+    ✅ FIX aplicado: NO pasamos fields=None a GeoJsonTooltip (causaba AssertionError).
     """
     if show_provincias:
         prov = _load_geojson(CR_PROVINCIAS_GEOJSON_URL)
-        folium.GeoJson(
+
+        prov_key = _pick_prop_key(
+            prov,
+            ["provincia", "Provincia", "PROVINCIA", "name", "NAME", "nombre", "NOMBRE"]
+        )
+
+        gj = folium.GeoJson(
             prov,
             name="Provincias (hover)",
             pane="admin",
             style_function=lambda f: {"color": "#00E5FF", "weight": 2, "fillOpacity": 0.0},
             highlight_function=lambda f: {"weight": 4, "color": "#00E5FF"},
-            tooltip=folium.GeoJsonTooltip(
-                fields=["provincia"] if "provincia" in (prov.get("features", [{}])[0].get("properties", {})) else None,
-                aliases=["Provincia:"],
-                sticky=True
+        )
+
+        if prov_key:
+            gj.add_child(
+                folium.GeoJsonTooltip(
+                    fields=[prov_key],   # ✅ SIEMPRE LIST
+                    aliases=["Provincia:"],
+                    sticky=True
+                )
             )
-        ).add_to(m)
+        gj.add_to(m)
 
     if show_cantones:
         cant = _load_geojson(CR_CANTONES_GEOJSON_URL)
-        # Muchos geojson usan "canton" / "cantón" / "CANTON". Resolvemos dinámico:
-        sample_props = (cant.get("features", [{}])[0].get("properties", {}) or {})
-        field_canton = None
-        for k in ["canton", "cantón", "CANTON", "Canton"]:
-            if k in sample_props:
-                field_canton = k
-                break
 
-        folium.GeoJson(
+        canton_key = _pick_prop_key(
+            cant,
+            ["canton", "cantón", "CANTON", "Canton", "name", "NAME", "nombre", "NOMBRE"]
+        )
+
+        gj2 = folium.GeoJson(
             cant,
             name="Cantones (hover)",
             pane="admin",
             style_function=lambda f: {"color": "#FFFFFF", "weight": 1, "fillOpacity": 0.0},
             highlight_function=lambda f: {"weight": 3, "color": "#FFFFFF"},
-            tooltip=folium.GeoJsonTooltip(
-                fields=[field_canton] if field_canton else None,
-                aliases=["Cantón:"],
-                sticky=True
+        )
+
+        if canton_key:
+            gj2.add_child(
+                folium.GeoJsonTooltip(
+                    fields=[canton_key],  # ✅ SIEMPRE LIST
+                    aliases=["Cantón:"],
+                    sticky=True
+                )
             )
-        ).add_to(m)
+        gj2.add_to(m)
 
 def _legend_html():
+    """Leyenda de factores (para visor)."""
     items = "".join(
         f'<div style="display:flex;align-items:flex-start;margin-bottom:6px">'
         f'<span style="width:12px;height:12px;background:{FACTOR_COLORS.get(f,"#555")};'
@@ -292,9 +361,20 @@ def _legend_html():
         '<div style="font-weight:700; margin-bottom:6px; color:#000;">Leyenda – Factores</div>'
         f'{items}</div>'
     )
+# ==========================================================
+# PARTE 4/10
+# Utilidades para Formulario 1 (estructuras) + carga general
+# ==========================================================
+
 def extract_all_structures(df1: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normaliza Form1:
+    - Por cada fila (punto) puede haber estructura_1..estructura_11
+    - Devuelve un DF con UNA estructura por fila (para dashboard).
+    """
     if df1.empty:
         return pd.DataFrame(columns=["provincia","canton","barrio","estructura","maps_link","date","lat","lng"])
+
     rows = []
     for _, r in df1.iterrows():
         prov = str(r.get("provincia","")).strip()
@@ -304,43 +384,61 @@ def extract_all_structures(df1: pd.DataFrame) -> pd.DataFrame:
         maps_link = str(r.get("maps_link","")).strip()
         lat = r.get("lat")
         lng = r.get("lng")
+
         for i in range(1, 12):
             val = str(r.get(f"estructura_{i}", "")).strip()
             if val and val.lower() != "nan":
                 rows.append({
-                    "provincia": prov, "canton": cant, "barrio": barr,
+                    "provincia": prov,
+                    "canton": cant,
+                    "barrio": barr,
                     "estructura": val,
-                    "maps_link": maps_link, "date": date,
-                    "lat": lat, "lng": lng
+                    "maps_link": maps_link,
+                    "date": date,
+                    "lat": lat,
+                    "lng": lng
                 })
     return pd.DataFrame(rows)
 
 def parse_date_safe(series: pd.Series) -> pd.Series:
+    """Parsea fecha dd-mm-YYYY si existe."""
     return pd.to_datetime(series, errors="coerce", dayfirst=True)
 
 def load_all_data() -> pd.DataFrame:
+    """
+    Carga TODO para visor y gráficas globales:
+    - Form1 (estructura)
+    - Forms 2..5 (encuesta)
+    """
     dfs = []
+
     df1 = read_df_generic(FORM1_SHEET, FORM1_HEADERS).copy()
     df1["form_label"] = FORM1_TITLE
-    df1["factores"] = "(Form1 – estructuras)"
+    df1["factores"] = "(Form1 – estructuras)"  # para compatibilidad en visor
     dfs.append(df1)
 
-    for label in ["Formulario 2","Formulario 3","Formulario 4","Formulario 5"]:
+    for label in ["Formulario 2", "Formulario 3", "Formulario 4", "Formulario 5"]:
         ws_name = FORM_SHEETS[label]
         df = read_df_generic(ws_name, SURVEY_HEADERS).copy()
         df["form_label"] = label
         dfs.append(df)
 
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+# ==========================================================
+# PARTE 5/10
+# UI: Título + Tabs
+# ==========================================================
+
 st.title("📍 Costa Rica — Formularios + Visor + Gráficas")
-st.caption("Se agregan capas de Provincias y Cantones con nombres (hover) para ubicarte mejor. :contentReference[oaicite:3]{index=3}")
+st.caption("Mapas con nombres de provincias y cantones (hover) para ubicarte mejor.")
 
 tab_labels = list(FORM_SHEETS.keys()) + ["Visor (capas)", "📊 Gráficas"]
 tabs = st.tabs(tab_labels)
+# ==========================================================
+# PARTE 6/10
+# TAB 1 — Formulario 1 (Provincia/Cantón/Barrio + Estructuras)
+# ==========================================================
 
-# =========================
-# TAB 1 — FORM 1
-# =========================
 with tabs[0]:
     st.subheader(f"{FORM1_TITLE} — Hoja: {FORM1_SHEET}")
 
@@ -350,9 +448,10 @@ with tabs[0]:
 
     left, right = st.columns([0.58, 0.42], gap="large")
 
+    # ---------- Mapa ----------
     with left:
         st.markdown("### Selecciona un punto en el mapa")
-        st.caption("Tip: pasa el mouse sobre polígonos para ver Provincia/Cantón.")
+        st.caption("Pasa el mouse sobre un polígono para ver Provincia/Cantón.")
 
         key_clicked = "clicked_form1"
         clicked = st.session_state.get(key_clicked) or {}
@@ -360,11 +459,15 @@ with tabs[0]:
 
         m = folium.Map(location=center, zoom_start=CR_ZOOM, control_scale=True, tiles=None)
         _add_panes(m)
+
+        # Siempre Esri satélite y opcional otro (si querés)
         _add_tile_by_name(m, "Esri Satélite")
         if style != "Esri Satélite":
             _add_tile_by_name(m, style)
 
+        # ✅ Provincias/Cantones
         add_admin_layers(m, show_provincias=show_prov, show_cantones=show_cant)
+
         LocateControl(auto_start=False, flyTo=True).add_to(m)
 
         if clicked.get("lat") is not None and clicked.get("lng") is not None:
@@ -393,8 +496,9 @@ with tabs[0]:
             st.session_state.pop(key_clicked, None)
             st.rerun()
 
+    # ---------- Formulario ----------
     with right:
-        st.markdown("### Formulario (Provincia / Cantón / Barrio opcional + estructuras)")
+        st.markdown("### Formulario")
         with st.form("form_excel_1", clear_on_submit=True):
             provincia = st.text_input("Provincia *")
             canton = st.text_input("Cantón *")
@@ -402,6 +506,7 @@ with tabs[0]:
 
             st.markdown("#### Estructuras / Pandillas (podés llenar varias)")
             e = [st.text_input(f"Estructura {i}") for i in range(1, 12)]
+
             submit = st.form_submit_button("Guardar en Google Sheets")
 
         if submit:
@@ -431,6 +536,11 @@ with tabs[0]:
                 st.success("✅ Registro guardado en Formulario 1.")
                 st.cache_data.clear()
                 st.rerun()
+# ==========================================================
+# PARTE 7/10
+# TAB 1 — Tabla + Dashboard (filtros provincia/cantón/pandilla)
+# ==========================================================
+
     st.divider()
     st.markdown("## 📋 Datos registrados (Formulario 1)")
     df1 = read_df_generic(FORM1_SHEET, FORM1_HEADERS)
@@ -445,9 +555,9 @@ with tabs[0]:
     )
 
     st.divider()
-    st.markdown("## 📊 Dashboard (Formulario 1) — filtros y gráficas")
-    df_struct = extract_all_structures(df1)
+    st.markdown("## 📊 Dashboard (Formulario 1)")
 
+    df_struct = extract_all_structures(df1)
     if df_struct.empty:
         st.info("Aún no hay estructuras registradas para graficar.")
     else:
@@ -504,22 +614,121 @@ with tabs[0]:
         grp = df_tmp.groupby(["provincia","canton","estructura"]).size().reset_index(name="conteo")
         fig_sun = px.sunburst(
             grp, path=["provincia","canton","estructura"], values="conteo",
-            template="plotly_dark",
-            title="Capas: Provincia → Cantón → Pandilla"
+            template="plotly_dark", title="Capas: Provincia → Cantón → Pandilla"
         )
         fig_sun.update_layout(height=600, margin=dict(l=10, r=10, t=60, b=10))
         st.plotly_chart(fig_sun, use_container_width=True)
+# ==========================================================
+# PARTE 8/10
+# Formularios 2..5 (misma lógica, mismas capas admin, hojas separadas)
+# ==========================================================
+
+def render_survey_form(form_label: str):
+    ws_name = FORM_SHEETS[form_label]
+    st.subheader(f"{form_label} — Hoja: {ws_name}")
+
+    style = st.selectbox("Estilo de mapa", MAP_STYLE_OPTIONS, index=0, key=f"style_{ws_name}")
+    show_prov = st.checkbox("Mostrar Provincias (hover)", value=True, key=f"{ws_name}_prov")
+    show_cant = st.checkbox("Mostrar Cantones (hover)", value=True, key=f"{ws_name}_cant")
+
+    left, right = st.columns([0.58, 0.42], gap="large")
+
+    with left:
+        st.markdown("### Selecciona un punto en el mapa")
+        st.caption("Pasa el mouse por un polígono para ver Provincia/Cantón.")
+
+        key_clicked = f"clicked_{ws_name}"
+        clicked = st.session_state.get(key_clicked) or {}
+        center = [clicked.get("lat", CR_CENTER[0]), clicked.get("lng", CR_CENTER[1])]
+
+        m = folium.Map(location=center, zoom_start=CR_ZOOM, control_scale=True, tiles=None)
+        _add_panes(m)
+        _add_tile_by_name(m, "Esri Satélite")
+        if style != "Esri Satélite":
+            _add_tile_by_name(m, style)
+
+        add_admin_layers(m, show_provincias=show_prov, show_cantones=show_cant)
+        LocateControl(auto_start=False, flyTo=True).add_to(m)
+
+        if clicked.get("lat") is not None and clicked.get("lng") is not None:
+            folium.Marker(
+                [clicked["lat"], clicked["lng"]],
+                icon=make_pin_icon("#2dd4bf"),
+                tooltip="Ubicación seleccionada",
+                pane="markers"
+            ).add_to(m)
+
+        folium.LayerControl(collapsed=False).add_to(m)
+        map_ret = st_folium(m, height=520, use_container_width=True, key=f"map_{ws_name}")
+
+        if map_ret and map_ret.get("last_clicked"):
+            st.session_state[key_clicked] = {
+                "lat": round(map_ret["last_clicked"]["lat"], 6),
+                "lng": round(map_ret["last_clicked"]["lng"], 6),
+            }
+            clicked = st.session_state[key_clicked]
+
+        cols = st.columns(3)
+        lat_val, lng_val = clicked.get("lat"), clicked.get("lng")
+        cols[0].metric("Latitud", lat_val if lat_val is not None else "—")
+        cols[1].metric("Longitud", lng_val if lng_val is not None else "—")
+        if cols[2].button("Limpiar selección", key=f"clear_{ws_name}"):
+            st.session_state.pop(key_clicked, None)
+            st.rerun()
+
+    with right:
+        st.markdown("### Formulario de encuesta")
+        with st.form(f"form_{ws_name}", clear_on_submit=True):
+            barrio = st.text_input("Barrio (opcional)")
+            factores_sel = st.multiselect("Factor(es) de riesgo *", options=FACTORES, default=[])
+            delitos = st.text_area("Delitos relacionados (opcional)", height=70)
+            ligado = st.radio("Ligado a estructura (opcional)", ["No", "Sí"], index=0, horizontal=True)
+            nombre_estructura = st.text_input("Nombre de la estructura (opcional)")
+            observ = st.text_area("Observaciones (opcional)", height=90)
+            submit = st.form_submit_button("Guardar en Google Sheets")
+
+        if submit:
+            errs = []
+            if lat_val is None or lng_val is None:
+                errs.append("Selecciona un **punto en el mapa**.")
+            if not factores_sel:
+                errs.append("Selecciona al menos **un factor**.")
+            if errs:
+                st.error("• " + "\n• ".join(errs))
+            else:
+                payload = {
+                    "date": datetime.now(TZ).strftime("%d-%m-%Y"),
+                    "barrio": (barrio or "").strip(),
+                    "factores": factores_sel,
+                    "delitos_relacionados": (delitos or "").strip(),
+                    "ligado_estructura": (ligado or "").strip(),
+                    "nombre_estructura": (nombre_estructura or "").strip(),
+                    "observaciones": (observ or "").strip(),
+                    "lat": lat_val, "lng": lng_val,
+                }
+                n = append_rows_one_per_factor(ws_name, payload)
+                st.success(f"✅ Guardado: {n} fila(s) (una por factor).")
+                st.cache_data.clear()
+                st.rerun()
+
+    st.divider()
+    df_local = read_df_generic(ws_name, SURVEY_HEADERS)
+    st.dataframe(df_local[SURVEY_HEADERS].tail(200), use_container_width=True)
+
+
 with tabs[1]:
     render_survey_form("Formulario 2")
-
 with tabs[2]:
     render_survey_form("Formulario 3")
-
 with tabs[3]:
     render_survey_form("Formulario 4")
-
 with tabs[4]:
     render_survey_form("Formulario 5")
+# ==========================================================
+# PARTE 9/10
+# Visor (capas): ver datos de 1,2,3,4,5 o todos juntos
+# ==========================================================
+
 with tabs[-2]:
     st.subheader("🗺️ Visor (capas) — por formulario o todo junto")
 
@@ -550,11 +759,14 @@ with tabs[-2]:
 
         m = folium.Map(location=CR_CENTER, zoom_start=CR_ZOOM, control_scale=True, tiles=None)
         _add_panes(m)
+
         _add_tile_by_name(m, "Esri Satélite")
         if visor_style != "Esri Satélite":
             _add_tile_by_name(m, visor_style)
 
+        # ✅ Provincias/Cantones
         add_admin_layers(m, show_provincias=show_prov, show_cantones=show_cant)
+
         LocateControl(auto_start=False).add_to(m)
         m.get_root().html.add_child(folium.Element(_legend_html()))
 
@@ -574,7 +786,7 @@ with tabs[-2]:
             factor = r.get("factores", "")
             color = FACTOR_COLORS.get(factor, "#2dd4bf") if factor in FACTOR_COLORS else "#2dd4bf"
 
-            # Popup
+            # Popup (Form1 distinto)
             if form_label == FORM1_TITLE:
                 estructuras = []
                 for i in range(1, 12):
@@ -617,20 +829,29 @@ with tabs[-2]:
             idx += 1
 
         if show_heat and heat_points:
-            red_gradient = {0.2: "pink", 0.5: "red", 1.0: "darkred"}
             HeatMap(
                 heat_points,
                 radius=18, blur=22, max_zoom=16, min_opacity=0.25,
-                gradient=red_gradient
+                gradient={0.2: "pink", 0.5: "red", 1.0: "darkred"}
             ).add_to(folium.FeatureGroup(name="Mapa de calor", overlay=True, control=True, pane="heatmap").add_to(m))
 
         folium.LayerControl(collapsed=False).add_to(m)
 
-        # SIN PARPADEO
+        # ✅ IMPORTANTÍSIMO: returned_objects=[] reduce parpadeo / recargas
         st_folium(m, height=560, use_container_width=True, key="visor_map", returned_objects=[])
 
         if omitidos:
             st.caption(f"({omitidos} registro(s) omitidos por coordenadas inválidas)")
+
+        st.divider()
+        st.markdown("#### Tabla (según filtros)")
+        cols_show = [c for c in dfv.columns if c in (["form_label","date","barrio","factores","maps_link","provincia","canton"])]
+        st.dataframe(dfv[cols_show].tail(500), use_container_width=True)
+# ==========================================================
+# PARTE 10/10
+# Gráficas globales (PLUS) + requirements
+# ==========================================================
+
 with tabs[-1]:
     st.subheader("📊 Gráficas globales (Plus)")
     df_all = load_all_data()
@@ -641,9 +862,11 @@ with tabs[-1]:
         c1, c2, c3 = st.columns([0.35, 0.35, 0.30])
         with c1:
             layer = st.selectbox("Fuente (formulario)", options=["(Todos)"] + list(FORM_SHEETS.keys()), index=0, key="g_layer")
+
         with c2:
             factores_unicos = sorted([f for f in df_all.get("factores", pd.Series([])).dropna().unique() if str(f).strip()])
             factor_sel = st.selectbox("Factor (opcional)", options=["(Todos)"] + factores_unicos, index=0, key="g_factor")
+
         with c3:
             top_n = st.slider("Top N", 5, 25, 10, key="g_top")
 
@@ -652,17 +875,6 @@ with tabs[-1]:
             dfg = dfg[dfg["form_label"] == layer]
         if factor_sel != "(Todos)" and "factores" in dfg.columns:
             dfg = dfg[dfg["factores"] == factor_sel]
-
-        if "date" in dfg.columns:
-            dfg["date_dt"] = parse_date_safe(dfg["date"])
-            min_d = dfg["date_dt"].min()
-            max_d = dfg["date_dt"].max()
-            if pd.notna(min_d) and pd.notna(max_d):
-                r = st.date_input("Rango de fechas (opcional)", value=(min_d.date(), max_d.date()), key="g_date")
-                if isinstance(r, tuple) and len(r) == 2:
-                    d1 = pd.to_datetime(r[0])
-                    d2 = pd.to_datetime(r[1]) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-                    dfg = dfg[(dfg["date_dt"] >= d1) & (dfg["date_dt"] <= d2)]
 
         if dfg.empty:
             st.warning("No hay datos con esos filtros.")
