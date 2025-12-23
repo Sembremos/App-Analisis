@@ -5,8 +5,8 @@
 # ✅ Página 1: barrio -> distrito
 # ✅ Pines por provincia (color distinto)
 # ✅ Provincia/Cantón precargados (cantón condicionado por provincia)
-# ✅ Página 2/3/4 con columnas EXACTAS según imágenes (se agregan id/date solo para CRUD)
-# ✅ Tablas sin índice (sin contar filas)
+# ✅ Página 2/3/4 con columnas EXACTAS según imágenes (+ id/date/maps_link para CRUD y mapa)
+# ✅ Todas las páginas tienen MAPA (P1..P5)
 
 import streamlit as st
 import pandas as pd
@@ -82,13 +82,10 @@ DEFAULT_PROV_COLOR = "#2dd4bf"
 # PÁGINAS / HOJAS (Google Sheets)
 # ==========================================================
 P1_TITLE = "Pandillas de trafico transnacional Costa Rica 2025"  # Página 1
-
-# OJO: Reordenado EXACTO como pediste
-P2_TITLE = "Community Prevention Centers"  # Página 2 (imagen 1)
-P3_TITLE = "Programa de empleabilidad"     # Página 3 (imagen 2)
-P4_TITLE = "Bandas municipales"            # Página 4 (imagen 3)
-
-P5_TITLE = "Formulario 5"                  # Página 5 opcional (factores con mapa)
+P2_TITLE = "Community Prevention Centers"                        # Página 2
+P3_TITLE = "Programa de empleabilidad"                           # Página 3
+P4_TITLE = "Bandas municipales"                                  # Página 4
+P5_TITLE = "Formulario 5"                                        # Página 5 (factores)
 
 FORM_SHEETS = {
     P1_TITLE: P1_TITLE,
@@ -100,29 +97,31 @@ FORM_SHEETS = {
 
 # ==========================================================
 # SCHEMAS (con ID para CRUD)
+# Nota: P2/P3/P4 se mantienen EXACTO en columnas principales,
+#       pero agregamos maps_link para que tenga mapa como pediste.
 # ==========================================================
-# Página 1 (pandillas/estructuras)
 P1_HEADERS = [
     "id",
     "provincia",
     "canton",
-    "distrito",   # antes "barrio"
+    "distrito",
     "estructura_1","estructura_2","estructura_3","estructura_4","estructura_5","estructura_6",
     "estructura_7","estructura_8","estructura_9","estructura_10","estructura_11",
     "maps_link",
     "date",
 ]
 
-# Página 2 (CPC) — EXACTO como imagen 1 (se agrega id/date para CRUD)
+# Imagen 1 + maps_link
 P2_HEADERS = [
     "id",
     "Beneficiaries",
     "Canton",
     "Community Prevention Centers",
+    "maps_link",
     "date",
 ]
 
-# Página 3 (Empleabilidad) — EXACTO como imagen 2 (se agrega id/date para CRUD)
+# Imagen 2 + maps_link
 P3_HEADERS = [
     "id",
     "Canton",
@@ -130,20 +129,21 @@ P3_HEADERS = [
     "Cantidad de personas matriculadas",
     "Cantidad de personas egresadas",
     "sexo por personas egresadas",
+    "maps_link",
     "date",
 ]
 
-# Página 4 (Bandas municipales) — EXACTO como imagen 3 (se agrega id/date para CRUD)
+# Imagen 3 + maps_link
 P4_HEADERS = [
     "id",
     "provincia",
     "Canton",
     "Nombre de club o banda",
     "Beneficiarios",
+    "maps_link",
     "date",
 ]
 
-# Página 5 (factores con mapa)
 P5_HEADERS = [
     "id",
     "provincia",
@@ -241,13 +241,12 @@ def read_df_generic(ws_name: str, headers: list) -> pd.DataFrame:
         if c not in df.columns:
             df[c] = ""
 
-    # compatibilidad: si una hoja vieja tenía "barrio" y ahora usamos "distrito"
+    # compatibilidad: si una hoja vieja tenía "barrio"
     if "distrito" in headers and "barrio" in df.columns:
         df["distrito"] = df.get("distrito", "").fillna("").astype(str)
         df["barrio"] = df["barrio"].fillna("").astype(str)
         df.loc[df["distrito"].str.strip() == "", "distrito"] = df["barrio"]
 
-    # lat/lng solo si existe maps_link
     url_pat = re.compile(r"https?://.*maps\?q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)")
     lat_list, lng_list = [], []
     for v in df.get("maps_link", pd.Series([""] * len(df))):
@@ -341,7 +340,7 @@ def color_by_provincia(prov: str) -> str:
     return PROV_COLORS.get(prov, DEFAULT_PROV_COLOR)
 
 # ==========================================================
-# HELPERS UI: select Provincia/Cantón condicionados
+# HELPERS UI
 # ==========================================================
 def ui_select_prov_canton(key_prefix: str, default_prov: str = "", default_canton: str = ""):
     c1, c2 = st.columns(2)
@@ -365,8 +364,50 @@ def ui_select_prov_canton(key_prefix: str, default_prov: str = "", default_canto
 def hide_df_index(df: pd.DataFrame):
     st.dataframe(df, use_container_width=True, hide_index=True)
 
+def render_pick_map(map_key_prefix: str, style_key: str, clicked_key: str):
+    """Renderiza mapa para capturar un punto y devuelve (lat, lng) desde session_state."""
+    style = st.selectbox("Estilo de mapa", MAP_STYLE_OPTIONS, index=0, key=style_key)
+
+    clicked = st.session_state.get(clicked_key) or {}
+    center = [clicked.get("lat", CR_CENTER[0]), clicked.get("lng", CR_CENTER[1])]
+
+    m = folium.Map(location=center, zoom_start=CR_ZOOM, control_scale=True, tiles=None)
+    _add_panes(m)
+    _add_tile_by_name(m, "Esri Satélite")
+    if style != "Esri Satélite":
+        _add_tile_by_name(m, style)
+    LocateControl(auto_start=False, flyTo=True).add_to(m)
+
+    if clicked.get("lat") is not None and clicked.get("lng") is not None:
+        folium.Marker(
+            [clicked["lat"], clicked["lng"]],
+            icon=make_pin_icon("#2dd4bf"),
+            tooltip="Ubicación seleccionada",
+            pane="markers"
+        ).add_to(m)
+
+    folium.LayerControl(collapsed=False).add_to(m)
+    map_ret = st_folium(m, height=520, use_container_width=True, key=map_key_prefix)
+
+    if map_ret and map_ret.get("last_clicked"):
+        st.session_state[clicked_key] = {
+            "lat": round(map_ret["last_clicked"]["lat"], 6),
+            "lng": round(map_ret["last_clicked"]["lng"], 6),
+        }
+        clicked = st.session_state[clicked_key]
+
+    cols = st.columns(3)
+    lat_val, lng_val = clicked.get("lat"), clicked.get("lng")
+    cols[0].metric("Latitud", lat_val if lat_val is not None else "—")
+    cols[1].metric("Longitud", lng_val if lng_val is not None else "—")
+    if cols[2].button("Limpiar selección", key=f"clear_{clicked_key}"):
+        st.session_state.pop(clicked_key, None)
+        st.rerun()
+
+    return lat_val, lng_val
+
 # ==========================================================
-# LOAD ALL (para visor y gráficas globales)
+# LOAD ALL
 # ==========================================================
 def load_all_data() -> pd.DataFrame:
     dfs = []
@@ -411,7 +452,10 @@ def crud_block(ws_name: str, headers: list, df: pd.DataFrame, label: str, previe
 
     def _label_row(r):
         parts = []
-        for c in ["provincia","canton","distrito","Canton","date","Nombre de club o banda","Cursos Brindados","Community Prevention Centers"]:
+        for c in [
+            "provincia","canton","distrito","Canton","date",
+            "Nombre de club o banda","Cursos Brindados","Community Prevention Centers"
+        ]:
             if c in r and str(r.get(c,"")).strip():
                 parts.append(str(r.get(c)))
         return " | ".join(parts)[:140] if parts else "registro"
@@ -487,58 +531,24 @@ def crud_block(ws_name: str, headers: list, df: pd.DataFrame, label: str, previe
 # UI
 # ==========================================================
 st.title("📍 Costa Rica — Páginas + Visor + Gráficas")
-st.caption("CRUD incluido (editar/eliminar). Gráficas SOLO en pestaña 📊 Gráficas.")
+st.caption("CRUD incluido (editar/eliminar). Gráficas SOLO en pestaña 📊 Gráficas. Todas las páginas con mapa.")
 
 tab_labels = [P1_TITLE, P2_TITLE, P3_TITLE, P4_TITLE, P5_TITLE, "Visor (capas)", "📊 Gráficas"]
 tabs = st.tabs(tab_labels)
-
 # ==========================================================
-# PÁGINA 1 — Pandillas/Estructuras (mapa + CRUD, sin gráficas aquí)
+# PÁGINA 1 — Pandillas/Estructuras (mapa + CRUD)
 # ==========================================================
 with tabs[0]:
     st.subheader(f"{P1_TITLE} — Guardando en hoja: {P1_TITLE}")
 
-    style = st.selectbox("Estilo de mapa", MAP_STYLE_OPTIONS, index=0, key="style_p1")
     left, right = st.columns([0.58, 0.42], gap="large")
-
     with left:
         st.markdown("### Selecciona un punto en el mapa")
-        key_clicked = "clicked_p1"
-        clicked = st.session_state.get(key_clicked) or {}
-        center = [clicked.get("lat", CR_CENTER[0]), clicked.get("lng", CR_CENTER[1])]
-
-        m = folium.Map(location=center, zoom_start=CR_ZOOM, control_scale=True, tiles=None)
-        _add_panes(m)
-        _add_tile_by_name(m, "Esri Satélite")
-        if style != "Esri Satélite":
-            _add_tile_by_name(m, style)
-        LocateControl(auto_start=False, flyTo=True).add_to(m)
-
-        if clicked.get("lat") is not None and clicked.get("lng") is not None:
-            folium.Marker(
-                [clicked["lat"], clicked["lng"]],
-                icon=make_pin_icon("#2dd4bf"),
-                tooltip="Ubicación seleccionada",
-                pane="markers"
-            ).add_to(m)
-
-        folium.LayerControl(collapsed=False).add_to(m)
-        map_ret = st_folium(m, height=520, use_container_width=True, key="map_p1")
-
-        if map_ret and map_ret.get("last_clicked"):
-            st.session_state[key_clicked] = {
-                "lat": round(map_ret["last_clicked"]["lat"], 6),
-                "lng": round(map_ret["last_clicked"]["lng"], 6),
-            }
-            clicked = st.session_state[key_clicked]
-
-        cols = st.columns(3)
-        lat_val, lng_val = clicked.get("lat"), clicked.get("lng")
-        cols[0].metric("Latitud", lat_val if lat_val is not None else "—")
-        cols[1].metric("Longitud", lng_val if lng_val is not None else "—")
-        if cols[2].button("Limpiar selección", key="clear_p1"):
-            st.session_state.pop(key_clicked, None)
-            st.rerun()
+        lat_val, lng_val = render_pick_map(
+            map_key_prefix="map_p1",
+            style_key="style_p1",
+            clicked_key="clicked_p1"
+        )
 
     with right:
         st.markdown("### Formulario (Provincia / Cantón / Distrito + estructuras)")
@@ -604,48 +614,62 @@ with tabs[0]:
         headers=P1_HEADERS,
         df=df1,
         label="Página 1 (Pandillas/Estructuras)",
-        preview_cols=["id","provincia","canton","distrito","date"] + [f"estructura_{i}" for i in range(1,12)]
+        preview_cols=["id","provincia","canton","distrito","date"] + [f"estructura_{i}" for i in range(1,12)] + ["maps_link"]
     )
 
 # ==========================================================
-# PÁGINA 2 — CPC (imagen 1) + CRUD
-# Columns: Beneficiaries | Canton | Community Prevention Centers
+# PÁGINA 2 — CPC (imagen 1) + MAPA + CRUD
+# Columns: Beneficiaries | Canton | Community Prevention Centers | maps_link
 # ==========================================================
 with tabs[1]:
     st.subheader(f"{P2_TITLE} — Guardando en hoja: {P2_TITLE}")
 
-    with st.form("form_p2", clear_on_submit=True):
-        # Para que "Canton" quede como en tus excel, lo guardo como "Provincia / Cantón"
-        prov, canton = ui_select_prov_canton("p2")
-        beneficiaries = st.number_input("Beneficiaries", min_value=0, step=1)
-        cpc_name = st.text_input("Community Prevention Centers *")
-        submit = st.form_submit_button("Guardar en Google Sheets")
+    left, right = st.columns([0.58, 0.42], gap="large")
+    with left:
+        st.markdown("### Selecciona un punto en el mapa")
+        lat_val, lng_val = render_pick_map(
+            map_key_prefix="map_p2",
+            style_key="style_p2",
+            clicked_key="clicked_p2"
+        )
 
-    if submit:
-        errs = []
-        if prov == "(Seleccione)":
-            errs.append("Provincia es requerida.")
-        if canton == "(Seleccione)":
-            errs.append("Cantón es requerido.")
-        if not cpc_name.strip():
-            errs.append("Community Prevention Centers es requerido.")
-        if errs:
-            st.error("• " + "\n• ".join(errs))
-        else:
-            row = {
-                "id": str(uuid.uuid4()),
-                "Beneficiaries": int(beneficiaries),
-                "Canton": f"{prov} / {canton}",
-                "Community Prevention Centers": cpc_name.strip(),
-                "date": datetime.now(TZ).strftime("%d-%m-%Y"),
-            }
-            try:
-                append_row_generic(P2_TITLE, P2_HEADERS, row)
-                st.success("✅ Registro guardado (Página 2).")
-                st.cache_data.clear()
-                st.rerun()
-            except Exception as ex:
-                st.error(f"❌ No se pudo guardar.\n\n{ex}")
+    with right:
+        st.markdown("### Formulario (CPC)")
+        with st.form("form_p2", clear_on_submit=True):
+            prov, canton = ui_select_prov_canton("p2")
+            beneficiaries = st.number_input("Beneficiaries", min_value=0, step=1)
+            cpc_name = st.text_input("Community Prevention Centers *")
+            submit = st.form_submit_button("Guardar en Google Sheets")
+
+        if submit:
+            errs = []
+            if lat_val is None or lng_val is None:
+                errs.append("Selecciona un **punto en el mapa**.")
+            if prov == "(Seleccione)":
+                errs.append("Provincia es requerida.")
+            if canton == "(Seleccione)":
+                errs.append("Cantón es requerido.")
+            if not cpc_name.strip():
+                errs.append("Community Prevention Centers es requerido.")
+            if errs:
+                st.error("• " + "\n• ".join(errs))
+            else:
+                maps_url = f"https://www.google.com/maps?q={lat_val},{lng_val}"
+                row = {
+                    "id": str(uuid.uuid4()),
+                    "Beneficiaries": int(beneficiaries),
+                    "Canton": f"{prov} / {canton}",
+                    "Community Prevention Centers": cpc_name.strip(),
+                    "maps_link": maps_url,
+                    "date": datetime.now(TZ).strftime("%d-%m-%Y"),
+                }
+                try:
+                    append_row_generic(P2_TITLE, P2_HEADERS, row)
+                    st.success("✅ Registro guardado (Página 2).")
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"❌ No se pudo guardar.\n\n{ex}")
 
     st.divider()
     st.markdown("## 📋 Datos registrados (Página 2)")
@@ -666,52 +690,65 @@ with tabs[1]:
         headers=P2_HEADERS,
         df=df2,
         label="Página 2 (CPC)",
-        preview_cols=["id","Canton","Community Prevention Centers","Beneficiaries","date"]
+        preview_cols=["id","Canton","Community Prevention Centers","Beneficiaries","maps_link","date"]
     )
 
 # ==========================================================
-# PÁGINA 3 — Empleabilidad (imagen 2) + CRUD
-# Columns: Cantón | Cursos Brindados | Cantidad ... matriculadas | ... egresadas | sexo...
+# PÁGINA 3 — Empleabilidad (imagen 2) + MAPA + CRUD
 # ==========================================================
 with tabs[2]:
     st.subheader(f"{P3_TITLE} — Guardando en hoja: {P3_TITLE}")
 
-    with st.form("form_p3", clear_on_submit=True):
-        # igual: guardo Canton como "Provincia / Cantón" para mantener formato consistente
-        prov, canton = ui_select_prov_canton("p3")
-        cursos = st.text_area("Cursos Brindados *", height=90)
-        matric = st.number_input("Cantidad de personas matriculadas", min_value=0, step=1)
-        egres = st.number_input("Cantidad de personas egresadas", min_value=0, step=1)
-        sexo = st.text_input("sexo por personas egresadas (ej: H: 36 / M: 59)")
-        submit = st.form_submit_button("Guardar en Google Sheets")
+    left, right = st.columns([0.58, 0.42], gap="large")
+    with left:
+        st.markdown("### Selecciona un punto en el mapa")
+        lat_val, lng_val = render_pick_map(
+            map_key_prefix="map_p3",
+            style_key="style_p3",
+            clicked_key="clicked_p3"
+        )
 
-    if submit:
-        errs = []
-        if prov == "(Seleccione)":
-            errs.append("Provincia es requerida.")
-        if canton == "(Seleccione)":
-            errs.append("Cantón es requerido.")
-        if not cursos.strip():
-            errs.append("Cursos Brindados es requerido.")
-        if errs:
-            st.error("• " + "\n• ".join(errs))
-        else:
-            row = {
-                "id": str(uuid.uuid4()),
-                "Canton": f"{prov} / {canton}",
-                "Cursos Brindados": cursos.strip(),
-                "Cantidad de personas matriculadas": int(matric),
-                "Cantidad de personas egresadas": int(egres),
-                "sexo por personas egresadas": (sexo or "").strip(),
-                "date": datetime.now(TZ).strftime("%d-%m-%Y"),
-            }
-            try:
-                append_row_generic(P3_TITLE, P3_HEADERS, row)
-                st.success("✅ Registro guardado (Página 3).")
-                st.cache_data.clear()
-                st.rerun()
-            except Exception as ex:
-                st.error(f"❌ No se pudo guardar.\n\n{ex}")
+    with right:
+        st.markdown("### Formulario (Empleabilidad)")
+        with st.form("form_p3", clear_on_submit=True):
+            prov, canton = ui_select_prov_canton("p3")
+            cursos = st.text_area("Cursos Brindados *", height=90)
+            matric = st.number_input("Cantidad de personas matriculadas", min_value=0, step=1)
+            egres = st.number_input("Cantidad de personas egresadas", min_value=0, step=1)
+            sexo = st.text_input("sexo por personas egresadas (ej: H: 36 / M: 59)")
+            submit = st.form_submit_button("Guardar en Google Sheets")
+
+        if submit:
+            errs = []
+            if lat_val is None or lng_val is None:
+                errs.append("Selecciona un **punto en el mapa**.")
+            if prov == "(Seleccione)":
+                errs.append("Provincia es requerida.")
+            if canton == "(Seleccione)":
+                errs.append("Cantón es requerido.")
+            if not cursos.strip():
+                errs.append("Cursos Brindados es requerido.")
+            if errs:
+                st.error("• " + "\n• ".join(errs))
+            else:
+                maps_url = f"https://www.google.com/maps?q={lat_val},{lng_val}"
+                row = {
+                    "id": str(uuid.uuid4()),
+                    "Canton": f"{prov} / {canton}",
+                    "Cursos Brindados": cursos.strip(),
+                    "Cantidad de personas matriculadas": int(matric),
+                    "Cantidad de personas egresadas": int(egres),
+                    "sexo por personas egresadas": (sexo or "").strip(),
+                    "maps_link": maps_url,
+                    "date": datetime.now(TZ).strftime("%d-%m-%Y"),
+                }
+                try:
+                    append_row_generic(P3_TITLE, P3_HEADERS, row)
+                    st.success("✅ Registro guardado (Página 3).")
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"❌ No se pudo guardar.\n\n{ex}")
 
     st.divider()
     st.markdown("## 📋 Datos registrados (Página 3)")
@@ -732,48 +769,62 @@ with tabs[2]:
         headers=P3_HEADERS,
         df=df3,
         label="Página 3 (Empleabilidad)",
-        preview_cols=["id","Canton","Cursos Brindados","Cantidad de personas matriculadas","Cantidad de personas egresadas","sexo por personas egresadas","date"]
+        preview_cols=["id","Canton","Cursos Brindados","Cantidad de personas matriculadas","Cantidad de personas egresadas","sexo por personas egresadas","maps_link","date"]
     )
 
 # ==========================================================
-# PÁGINA 4 — Bandas municipales (imagen 3) + CRUD
-# Columns: provincia | Canton | Nombre de club o banda | Beneficiarios
+# PÁGINA 4 — Bandas municipales (imagen 3) + MAPA + CRUD
 # ==========================================================
 with tabs[3]:
     st.subheader(f"{P4_TITLE} — Guardando en hoja: {P4_TITLE}")
 
-    with st.form("form_p4", clear_on_submit=True):
-        prov, canton = ui_select_prov_canton("p4")
-        nombre = st.text_input("Nombre de club o banda *")
-        beneficiarios = st.number_input("Beneficiarios", min_value=0, step=1)
-        submit = st.form_submit_button("Guardar en Google Sheets")
+    left, right = st.columns([0.58, 0.42], gap="large")
+    with left:
+        st.markdown("### Selecciona un punto en el mapa")
+        lat_val, lng_val = render_pick_map(
+            map_key_prefix="map_p4",
+            style_key="style_p4",
+            clicked_key="clicked_p4"
+        )
 
-    if submit:
-        errs = []
-        if prov == "(Seleccione)":
-            errs.append("Provincia es requerida.")
-        if canton == "(Seleccione)":
-            errs.append("Cantón es requerido.")
-        if not nombre.strip():
-            errs.append("Nombre de club o banda es requerido.")
-        if errs:
-            st.error("• " + "\n• ".join(errs))
-        else:
-            row = {
-                "id": str(uuid.uuid4()),
-                "provincia": prov,
-                "Canton": canton,
-                "Nombre de club o banda": nombre.strip(),
-                "Beneficiarios": int(beneficiarios),
-                "date": datetime.now(TZ).strftime("%d-%m-%Y"),
-            }
-            try:
-                append_row_generic(P4_TITLE, P4_HEADERS, row)
-                st.success("✅ Registro guardado (Página 4).")
-                st.cache_data.clear()
-                st.rerun()
-            except Exception as ex:
-                st.error(f"❌ No se pudo guardar.\n\n{ex}")
+    with right:
+        st.markdown("### Formulario (Bandas municipales)")
+        with st.form("form_p4", clear_on_submit=True):
+            prov, canton = ui_select_prov_canton("p4")
+            nombre = st.text_input("Nombre de club o banda *")
+            beneficiarios = st.number_input("Beneficiarios", min_value=0, step=1)
+            submit = st.form_submit_button("Guardar en Google Sheets")
+
+        if submit:
+            errs = []
+            if lat_val is None or lng_val is None:
+                errs.append("Selecciona un **punto en el mapa**.")
+            if prov == "(Seleccione)":
+                errs.append("Provincia es requerida.")
+            if canton == "(Seleccione)":
+                errs.append("Cantón es requerido.")
+            if not nombre.strip():
+                errs.append("Nombre de club o banda es requerido.")
+            if errs:
+                st.error("• " + "\n• ".join(errs))
+            else:
+                maps_url = f"https://www.google.com/maps?q={lat_val},{lng_val}"
+                row = {
+                    "id": str(uuid.uuid4()),
+                    "provincia": prov,
+                    "Canton": canton,
+                    "Nombre de club o banda": nombre.strip(),
+                    "Beneficiarios": int(beneficiarios),
+                    "maps_link": maps_url,
+                    "date": datetime.now(TZ).strftime("%d-%m-%Y"),
+                }
+                try:
+                    append_row_generic(P4_TITLE, P4_HEADERS, row)
+                    st.success("✅ Registro guardado (Página 4).")
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"❌ No se pudo guardar.\n\n{ex}")
 
     st.divider()
     st.markdown("## 📋 Datos registrados (Página 4)")
@@ -794,56 +845,22 @@ with tabs[3]:
         headers=P4_HEADERS,
         df=df4,
         label="Página 4 (Bandas municipales)",
-        preview_cols=["id","provincia","Canton","Nombre de club o banda","Beneficiarios","date"]
+        preview_cols=["id","provincia","Canton","Nombre de club o banda","Beneficiarios","maps_link","date"]
     )
-
 # ==========================================================
-# PÁGINA 5 — Factores (opcional) con mapa + CRUD
+# PÁGINA 5 — Factores (MAPA + CRUD)
 # ==========================================================
 with tabs[4]:
     st.subheader(f"{P5_TITLE} — Guardando en hoja: {FORM_SHEETS[P5_TITLE]}")
 
-    style = st.selectbox("Estilo de mapa", MAP_STYLE_OPTIONS, index=0, key="style_p5")
-
     left, right = st.columns([0.58, 0.42], gap="large")
     with left:
         st.markdown("### Selecciona un punto en el mapa")
-        key_clicked = "clicked_p5"
-        clicked = st.session_state.get(key_clicked) or {}
-        center = [clicked.get("lat", CR_CENTER[0]), clicked.get("lng", CR_CENTER[1])]
-
-        m = folium.Map(location=center, zoom_start=CR_ZOOM, control_scale=True, tiles=None)
-        _add_panes(m)
-        _add_tile_by_name(m, "Esri Satélite")
-        if style != "Esri Satélite":
-            _add_tile_by_name(m, style)
-        LocateControl(auto_start=False, flyTo=True).add_to(m)
-
-        if clicked.get("lat") is not None and clicked.get("lng") is not None:
-            folium.Marker(
-                [clicked["lat"], clicked["lng"]],
-                icon=make_pin_icon("#2dd4bf"),
-                tooltip="Ubicación seleccionada",
-                pane="markers"
-            ).add_to(m)
-
-        folium.LayerControl(collapsed=False).add_to(m)
-        map_ret = st_folium(m, height=520, use_container_width=True, key="map_p5")
-
-        if map_ret and map_ret.get("last_clicked"):
-            st.session_state[key_clicked] = {
-                "lat": round(map_ret["last_clicked"]["lat"], 6),
-                "lng": round(map_ret["last_clicked"]["lng"], 6),
-            }
-            clicked = st.session_state[key_clicked]
-
-        cols = st.columns(3)
-        lat_val, lng_val = clicked.get("lat"), clicked.get("lng")
-        cols[0].metric("Latitud", lat_val if lat_val is not None else "—")
-        cols[1].metric("Longitud", lng_val if lng_val is not None else "—")
-        if cols[2].button("Limpiar selección", key="clear_p5"):
-            st.session_state.pop(key_clicked, None)
-            st.rerun()
+        lat_val, lng_val = render_pick_map(
+            map_key_prefix="map_p5",
+            style_key="style_p5",
+            clicked_key="clicked_p5"
+        )
 
     with right:
         st.markdown("### Formulario (factores)")
@@ -913,15 +930,15 @@ with tabs[4]:
         headers=P5_HEADERS,
         df=df5,
         label="Página 5 (Factores)",
-        preview_cols=["id","provincia","canton","distrito","factores","date"]
+        preview_cols=["id","provincia","canton","distrito","factores","maps_link","date"]
     )
 
 # ==========================================================
-# VISOR (capas) — Pines por provincia
-# (Solo aparecerán páginas que tengan maps_link con coordenadas válidas: Página 1 y 5)
+# VISOR (capas) — Pines por provincia (TODAS las páginas)
+# Ahora P1..P5 tienen maps_link => el visor puede mostrarlas todas.
 # ==========================================================
 with tabs[-2]:
-    st.subheader("🗺️ Visor (capas) — Ver datos por página (solo mapas)")
+    st.subheader("🗺️ Visor (capas) — Ver datos por página o todo junto")
 
     visor_style = st.selectbox("Estilo de mapa (Visor)", MAP_STYLE_OPTIONS, index=0, key="visor_style")
 
@@ -929,18 +946,15 @@ with tabs[-2]:
     if df_all.empty:
         st.info("Aún no hay registros.")
     else:
-        # Solo páginas con coordenadas (P1 y P5)
-        df_map = df_all[df_all["page"].isin(["Página 1", "Página 5"])].copy()
-
         c1, c2, c3 = st.columns([0.45, 0.25, 0.30])
         with c1:
-            layer = st.selectbox("Capa a visualizar", options=["(Todas)","Página 1","Página 5"], index=0)
+            layer = st.selectbox("Capa a visualizar", options=["(Todas)","Página 1","Página 2","Página 3","Página 4","Página 5"], index=0)
         with c2:
             show_heat = st.checkbox("Mostrar HeatMap", value=True)
         with c3:
             show_clusters = st.checkbox("Mostrar clusters", value=True)
 
-        dfv = df_map.copy()
+        dfv = df_all.copy()
         if layer != "(Todas)":
             dfv = dfv[dfv["page"] == layer]
 
@@ -965,10 +979,19 @@ with tabs[-2]:
                 omitidos += 1
                 continue
 
+            # Para páginas donde no hay "provincia" (P2/P3),
+            # la inferimos desde el texto "Canton" que guardamos como "Provincia / Cantón"
             prov = str(r.get("provincia","")).strip()
+            if not prov and str(r.get("Canton","")).strip():
+                prov_guess = str(r.get("Canton","")).split("/")[0].strip()
+                if prov_guess in PROVINCIAS:
+                    prov = prov_guess
+
             pin_color = color_by_provincia(prov)
 
             page = r.get("page","")
+            popup = f"<b>{page}</b><br>"
+
             if page == "Página 1":
                 estructuras = []
                 for i in range(1, 12):
@@ -976,26 +999,44 @@ with tabs[-2]:
                     if v and v.lower() != "nan":
                         estructuras.append(v)
                 estructuras_txt = "<br>".join([f"• {x}" for x in estructuras]) if estructuras else "(sin estructuras)"
-                popup = (
-                    f"<b>Página:</b> 1 (Pandillas)<br>"
-                    f"<b>Provincia:</b> {prov}<br>"
+                popup += (
+                    f"<b>Provincia:</b> {r.get('provincia','')}<br>"
                     f"<b>Cantón:</b> {r.get('canton','')}<br>"
                     f"<b>Distrito:</b> {r.get('distrito','')}<br>"
                     f"<b>Estructuras:</b><br>{estructuras_txt}<br>"
-                    f"<b>Fecha:</b> {r.get('date','')}<br>"
-                    f"<b>Maps:</b> <a href='{r.get('maps_link','')}' target='_blank'>Abrir</a>"
+                )
+            elif page == "Página 2":
+                popup += (
+                    f"<b>Canton:</b> {r.get('Canton','')}<br>"
+                    f"<b>Centro:</b> {r.get('Community Prevention Centers','')}<br>"
+                    f"<b>Beneficiaries:</b> {r.get('Beneficiaries','')}<br>"
+                )
+            elif page == "Página 3":
+                popup += (
+                    f"<b>Canton:</b> {r.get('Canton','')}<br>"
+                    f"<b>Cursos:</b> {r.get('Cursos Brindados','')}<br>"
+                    f"<b>Matriculadas:</b> {r.get('Cantidad de personas matriculadas','')}<br>"
+                    f"<b>Egresadas:</b> {r.get('Cantidad de personas egresadas','')}<br>"
+                )
+            elif page == "Página 4":
+                popup += (
+                    f"<b>Provincia:</b> {r.get('provincia','')}<br>"
+                    f"<b>Canton:</b> {r.get('Canton','')}<br>"
+                    f"<b>Club/Banda:</b> {r.get('Nombre de club o banda','')}<br>"
+                    f"<b>Beneficiarios:</b> {r.get('Beneficiarios','')}<br>"
                 )
             else:
-                popup = (
-                    f"<b>Página:</b> 5 (Factores)<br>"
-                    f"<b>Provincia:</b> {prov}<br>"
+                popup += (
+                    f"<b>Provincia:</b> {r.get('provincia','')}<br>"
                     f"<b>Cantón:</b> {r.get('canton','')}<br>"
                     f"<b>Distrito:</b> {r.get('distrito','')}<br>"
-                    f"<b>Fecha:</b> {r.get('date','')}<br>"
                     f"<b>Factor(es):</b> {r.get('factores','')}<br>"
-                    f"<b>Delitos:</b> {r.get('delitos_relacionados','')}<br>"
-                    f"<b>Maps:</b> <a href='{r.get('maps_link','')}' target='_blank'>Abrir</a>"
                 )
+
+            popup += (
+                f"<b>Fecha:</b> {r.get('date','')}<br>"
+                f"<b>Maps:</b> <a href='{r.get('maps_link','')}' target='_blank'>Abrir</a>"
+            )
 
             jlat = float(lat) + _jitter(idx)
             jlng = float(lng) + _jitter(idx + 101)
@@ -1026,8 +1067,23 @@ with tabs[-2]:
 
         st.divider()
         st.markdown("#### Tabla (según filtros)")
-        base_cols = ["page","provincia","canton","distrito","date","maps_link"]
-        show_cols = [c for c in base_cols if c in dfv.columns]
+        base_cols = ["page","date","maps_link"]
+        # mostramos lo más relevante según página (sin índice)
+        if layer == "Página 1":
+            show_cols = ["page","provincia","canton","distrito","date","maps_link"] + [f"estructura_{i}" for i in range(1,12)]
+        elif layer == "Página 2":
+            show_cols = ["page","Canton","Community Prevention Centers","Beneficiaries","date","maps_link"]
+        elif layer == "Página 3":
+            show_cols = ["page","Canton","Cursos Brindados","Cantidad de personas matriculadas","Cantidad de personas egresadas","sexo por personas egresadas","date","maps_link"]
+        elif layer == "Página 4":
+            show_cols = ["page","provincia","Canton","Nombre de club o banda","Beneficiarios","date","maps_link"]
+        elif layer == "Página 5":
+            show_cols = ["page","provincia","canton","distrito","factores","date","maps_link"]
+        else:
+            # (Todas)
+            show_cols = [c for c in ["page","provincia","canton","distrito","Canton","Community Prevention Centers","Cursos Brindados","Nombre de club o banda","Beneficiaries","Beneficiarios","date","maps_link"] if c in dfv.columns]
+
+        show_cols = [c for c in show_cols if c in dfv.columns]
         hide_df_index(dfv[show_cols].copy())
 
 # ==========================================================
@@ -1053,7 +1109,6 @@ with tabs[-1]:
         if dfg.empty:
             st.warning("No hay datos en esa página.")
         else:
-            # Página 1: top estructuras
             if page_sel == "Página 1":
                 rows = []
                 for _, r in dfg.iterrows():
@@ -1088,7 +1143,6 @@ with tabs[-1]:
                     counts = tmp["estructura"].value_counts().head(top_n).reset_index()
                     counts.columns = ["estructura","conteo"]
 
-                    st.markdown("### 🔝 Top pandillas/estructuras (Barras)")
                     fig_bar = px.bar(
                         counts.sort_values("conteo", ascending=True),
                         x="conteo", y="estructura", orientation="h", text="conteo",
@@ -1099,7 +1153,6 @@ with tabs[-1]:
                     fig_bar.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
                     st.plotly_chart(fig_bar, use_container_width=True)
 
-                    st.markdown("### 🍩 Distribución (Donut)")
                     fig_donut = px.pie(
                         counts,
                         names="estructura",
@@ -1112,9 +1165,7 @@ with tabs[-1]:
                     fig_donut.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
                     st.plotly_chart(fig_donut, use_container_width=True)
 
-            # Página 2: CPC (conteo por centro / cantón)
             elif page_sel == "Página 2":
-                st.markdown("### 📌 Top Community Prevention Centers")
                 s = dfg["Community Prevention Centers"].fillna("").replace("", pd.NA).dropna().value_counts().head(15).reset_index()
                 s.columns = ["Community Prevention Centers", "conteo"]
                 fig = px.bar(
@@ -1124,10 +1175,9 @@ with tabs[-1]:
                     title="Top Community Prevention Centers (por frecuencia)"
                 )
                 fig.update_traces(textposition="outside", cliponaxis=False)
-                fig.update_layout(height=620, margin=dict(l=10, r=10, t=60, b=10))
+                fig.update_layout(height=650, margin=dict(l=10, r=10, t=60, b=10))
                 st.plotly_chart(fig, use_container_width=True)
 
-                st.markdown("### 📌 Suma de Beneficiaries por Cantón")
                 g = dfg.groupby("Canton", dropna=True)["Beneficiaries"].sum().sort_values(ascending=False).head(15).reset_index()
                 fig2 = px.bar(
                     g.sort_values("Beneficiaries", ascending=True),
@@ -1136,18 +1186,15 @@ with tabs[-1]:
                     title="Beneficiaries (suma) por Cantón"
                 )
                 fig2.update_traces(textposition="outside", cliponaxis=False)
-                fig2.update_layout(height=620, margin=dict(l=10, r=10, t=60, b=10))
+                fig2.update_layout(height=650, margin=dict(l=10, r=10, t=60, b=10))
                 st.plotly_chart(fig2, use_container_width=True)
 
-            # Página 3: empleabilidad
             elif page_sel == "Página 3":
-                st.markdown("### 📌 Suma matriculadas vs egresadas (Top 15 cantones)")
                 g = dfg.groupby("Canton", dropna=True)[
                     ["Cantidad de personas matriculadas", "Cantidad de personas egresadas"]
                 ].sum().sort_values("Cantidad de personas matriculadas", ascending=False).head(15).reset_index()
 
                 g_m = g.melt(id_vars=["Canton"], var_name="tipo", value_name="cantidad")
-
                 fig = px.bar(
                     g_m,
                     x="cantidad",
@@ -1157,12 +1204,10 @@ with tabs[-1]:
                     template="plotly_dark",
                     title="Matriculadas vs Egresadas (suma) por Cantón — Top 15"
                 )
-                fig.update_layout(height=700, margin=dict(l=10, r=10, t=60, b=10))
+                fig.update_layout(height=720, margin=dict(l=10, r=10, t=60, b=10))
                 st.plotly_chart(fig, use_container_width=True)
 
-            # Página 4: bandas
             elif page_sel == "Página 4":
-                st.markdown("### 📌 Beneficiarios por provincia (suma)")
                 g = dfg.groupby("provincia", dropna=True)["Beneficiarios"].sum().sort_values(ascending=False).reset_index()
                 fig = px.bar(
                     g.sort_values("Beneficiarios", ascending=True),
@@ -1174,7 +1219,6 @@ with tabs[-1]:
                 fig.update_layout(height=520, margin=dict(l=10, r=10, t=60, b=10))
                 st.plotly_chart(fig, use_container_width=True)
 
-                st.markdown("### 📌 Top clubes/bandas por beneficiarios")
                 g2 = dfg.groupby("Nombre de club o banda", dropna=True)["Beneficiarios"].sum().sort_values(ascending=False).head(15).reset_index()
                 fig2 = px.bar(
                     g2.sort_values("Beneficiarios", ascending=True),
@@ -1183,12 +1227,10 @@ with tabs[-1]:
                     title="Top 15 clubes/bandas por beneficiarios (suma)"
                 )
                 fig2.update_traces(textposition="outside", cliponaxis=False)
-                fig2.update_layout(height=700, margin=dict(l=10, r=10, t=60, b=10))
+                fig2.update_layout(height=720, margin=dict(l=10, r=10, t=60, b=10))
                 st.plotly_chart(fig2, use_container_width=True)
 
-            # Página 5: factores
             else:
-                st.markdown("### 📌 Frecuencia de factores (Top 15)")
                 expl = []
                 for _, r in dfg.iterrows():
                     txt = str(r.get("factores","") or "")
@@ -1207,13 +1249,11 @@ with tabs[-1]:
                         title="Top factores"
                     )
                     fig.update_traces(textposition="outside", cliponaxis=False)
-                    fig.update_layout(height=700, margin=dict(l=10, r=10, t=60, b=10))
+                    fig.update_layout(height=720, margin=dict(l=10, r=10, t=60, b=10))
                     st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
         st.markdown("#### Datos base (según página)")
         hide_df_index(dfg.head(500))
-
-
 
 
