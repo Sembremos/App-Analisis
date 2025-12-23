@@ -1248,5 +1248,13 @@ with tabs[-1]:
                     fig = px.bar(
                         s.sort_values("conteo", ascending=True),
                         x="conteo", y="factor", orientation="h", text="conteo",
-                        template="pl
+                        template="plotly_dark",
+                        title="Top factores"
+                    )
+                    fig.update_traces(textposition="outside", cliponaxis=False)
+                    fig.update_layout(height=720, margin=dict(l=10, r=10, t=60, b=10))
+                    st.plotly_chart(fig, use_container_width=True)
 
+        st.divider()
+        st.markdown("#### Datos base (según página)")
+        hide_df_index(dfg.head(500))
