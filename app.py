@@ -4,7 +4,7 @@
 # ✅ Gráficas SOLO en pestaña 📊 Gráficas
 # ✅ Página 1: barrio -> distrito
 # ✅ Pines por provincia (color distinto)
-# ✅ Provincia/Cantón precargados (cantón condicionado por provincia)
+# ✅ Provincia/Cantón precargados (cantón condicionado por provincia) + FIX cantones vacíos
 # ✅ Página 2/3/4 con columnas EXACTAS según imágenes (+ id/date/maps_link para CRUD y mapa)
 # ✅ Todas las páginas tienen MAPA (P1..P5)
 
@@ -97,8 +97,6 @@ FORM_SHEETS = {
 
 # ==========================================================
 # SCHEMAS (con ID para CRUD)
-# Nota: P2/P3/P4 se mantienen EXACTO en columnas principales,
-#       pero agregamos maps_link para que tenga mapa como pediste.
 # ==========================================================
 P1_HEADERS = [
     "id",
@@ -111,7 +109,7 @@ P1_HEADERS = [
     "date",
 ]
 
-# Imagen 1 + maps_link
+# P2: columnas principales EXACTAS + maps_link + date + id
 P2_HEADERS = [
     "id",
     "Beneficiaries",
@@ -121,7 +119,7 @@ P2_HEADERS = [
     "date",
 ]
 
-# Imagen 2 + maps_link
+# P3: columnas principales EXACTAS + maps_link + date + id
 P3_HEADERS = [
     "id",
     "Canton",
@@ -133,7 +131,7 @@ P3_HEADERS = [
     "date",
 ]
 
-# Imagen 3 + maps_link
+# P4: columnas principales EXACTAS + maps_link + date + id
 P4_HEADERS = [
     "id",
     "provincia",
@@ -144,6 +142,7 @@ P4_HEADERS = [
     "date",
 ]
 
+# P5: factores + provincia/canton/distrito + mapa + date + id
 P5_HEADERS = [
     "id",
     "provincia",
@@ -342,30 +341,11 @@ def color_by_provincia(prov: str) -> str:
 # ==========================================================
 # HELPERS UI
 # ==========================================================
-def ui_select_prov_canton(key_prefix: str, default_prov: str = "", default_canton: str = ""):
-    c1, c2 = st.columns(2)
-    with c1:
-        prov = st.selectbox(
-            "Provincia *",
-            options=["(Seleccione)"] + PROVINCIAS,
-            index=(PROVINCIAS.index(default_prov) + 1) if default_prov in PROVINCIAS else 0,
-            key=f"{key_prefix}_prov"
-        )
-    cantones = PROV_CANTONES.get(prov, []) if prov != "(Seleccione)" else []
-    with c2:
-        canton = st.selectbox(
-            "Cantón *",
-            options=["(Seleccione)"] + cantones,
-            index=(cantones.index(default_canton) + 1) if default_canton in cantones else 0,
-            key=f"{key_prefix}_canton"
-        )
-    return prov, canton
-
 def hide_df_index(df: pd.DataFrame):
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 def render_pick_map(map_key_prefix: str, style_key: str, clicked_key: str):
-    """Renderiza mapa para capturar un punto y devuelve (lat, lng) desde session_state."""
+    """Mapa para capturar punto. Devuelve (lat, lng) desde session_state."""
     style = st.selectbox("Estilo de mapa", MAP_STYLE_OPTIONS, index=0, key=style_key)
 
     clicked = st.session_state.get(clicked_key) or {}
@@ -405,6 +385,48 @@ def render_pick_map(map_key_prefix: str, style_key: str, clicked_key: str):
         st.rerun()
 
     return lat_val, lng_val
+
+# ==========================================================
+# ✅ FIX: Provincia -> Cantón (resetea cantón al cambiar provincia)
+# ==========================================================
+def ui_select_prov_canton(key_prefix: str, default_prov: str = "", default_canton: str = ""):
+    """
+    Selector Provincia -> Cantón (condicionado).
+    FIX: si cambia provincia, reinicia el cantón para que SIEMPRE cargue opciones.
+    """
+
+    default_prov = (default_prov or "").strip()
+    default_canton = (default_canton or "").strip()
+
+    k_prov = f"{key_prefix}_prov"
+    k_cant = f"{key_prefix}_canton"
+    k_last = f"{key_prefix}_last_prov"
+
+    prov_opts = ["(Seleccione)"] + PROVINCIAS
+    prov_default_idx = (PROVINCIAS.index(default_prov) + 1) if default_prov in PROVINCIAS else 0
+
+    prov = st.selectbox("Provincia *", options=prov_opts, index=prov_default_idx, key=k_prov)
+    prov = (prov or "").strip()
+
+    last_prov = st.session_state.get(k_last, None)
+    if last_prov is None:
+        st.session_state[k_last] = prov
+    elif last_prov != prov:
+        st.session_state[k_cant] = "(Seleccione)"
+        st.session_state[k_last] = prov
+
+    cantones = PROV_CANTONES.get(prov, []) if prov != "(Seleccione)" else []
+    cant_opts = ["(Seleccione)"] + cantones
+
+    cant_default_idx = (cantones.index(default_canton) + 1) if default_canton in cantones else 0
+
+    current_cant = st.session_state.get(k_cant, "(Seleccione)")
+    if current_cant in cant_opts:
+        cant_default_idx = cant_opts.index(current_cant)
+
+    canton = st.selectbox("Cantón *", options=cant_opts, index=cant_default_idx, key=k_cant)
+
+    return prov, canton
 
 # ==========================================================
 # LOAD ALL
@@ -488,12 +510,14 @@ def crud_block(ws_name: str, headers: list, df: pd.DataFrame, label: str, previe
             for h in headers:
                 if h == "id":
                     continue
-                if h in ["maps_link"]:
-                    updated[h] = st.text_input(h, value=str(row.get(h,"")), disabled=True)
-                elif h == "date":
+                if h in ["maps_link", "date"]:
                     updated[h] = st.text_input(h, value=str(row.get(h,"")), disabled=True)
                 elif h in ["Beneficiaries","Beneficiarios","Cantidad de personas matriculadas","Cantidad de personas egresadas"]:
-                    updated[h] = st.number_input(h, value=float(row.get(h) or 0), step=1.0)
+                    try:
+                        v0 = float(row.get(h) or 0)
+                    except Exception:
+                        v0 = 0.0
+                    updated[h] = st.number_input(h, value=v0, step=1.0)
                     if float(updated[h]).is_integer():
                         updated[h] = int(updated[h])
                 else:
@@ -544,15 +568,10 @@ with tabs[0]:
     left, right = st.columns([0.58, 0.42], gap="large")
     with left:
         st.markdown("### Selecciona un punto en el mapa")
-        lat_val, lng_val = render_pick_map(
-            map_key_prefix="map_p1",
-            style_key="style_p1",
-            clicked_key="clicked_p1"
-        )
+        lat_val, lng_val = render_pick_map("map_p1", "style_p1", "clicked_p1")
 
     with right:
         st.markdown("### Formulario (Provincia / Cantón / Distrito + estructuras)")
-
         with st.form("form_p1", clear_on_submit=True):
             prov, canton = ui_select_prov_canton("p1")
             distrito = st.text_input("Distrito (opcional)")
@@ -576,9 +595,8 @@ with tabs[0]:
                 st.error("• " + "\n• ".join(errs))
             else:
                 maps_url = f"https://www.google.com/maps?q={lat_val},{lng_val}"
-                rid = str(uuid.uuid4())
                 row = {
-                    "id": rid,
+                    "id": str(uuid.uuid4()),
                     "provincia": prov,
                     "canton": canton,
                     "distrito": (distrito or "").strip(),
@@ -597,12 +615,11 @@ with tabs[0]:
     st.divider()
     st.markdown("## 📋 Datos registrados (Página 1)")
     df1 = read_df_generic(P1_TITLE, P1_HEADERS)
-    cols_show = [c for c in P1_HEADERS if c in df1.columns]
-    hide_df_index(df1[cols_show].tail(300))
+    hide_df_index(df1[[c for c in P1_HEADERS if c in df1.columns]].tail(300))
 
     st.download_button(
         "⬇️ Descargar CSV (Página 1)",
-        data=df1[cols_show].to_csv(index=False).encode("utf-8"),
+        data=df1[[c for c in P1_HEADERS if c in df1.columns]].to_csv(index=False).encode("utf-8"),
         file_name=f"{P1_TITLE}.csv",
         mime="text/csv",
         key="dl_p1"
@@ -619,7 +636,6 @@ with tabs[0]:
 
 # ==========================================================
 # PÁGINA 2 — CPC (imagen 1) + MAPA + CRUD
-# Columns: Beneficiaries | Canton | Community Prevention Centers | maps_link
 # ==========================================================
 with tabs[1]:
     st.subheader(f"{P2_TITLE} — Guardando en hoja: {P2_TITLE}")
@@ -627,11 +643,7 @@ with tabs[1]:
     left, right = st.columns([0.58, 0.42], gap="large")
     with left:
         st.markdown("### Selecciona un punto en el mapa")
-        lat_val, lng_val = render_pick_map(
-            map_key_prefix="map_p2",
-            style_key="style_p2",
-            clicked_key="clicked_p2"
-        )
+        lat_val, lng_val = render_pick_map("map_p2", "style_p2", "clicked_p2")
 
     with right:
         st.markdown("### Formulario (CPC)")
@@ -702,11 +714,7 @@ with tabs[2]:
     left, right = st.columns([0.58, 0.42], gap="large")
     with left:
         st.markdown("### Selecciona un punto en el mapa")
-        lat_val, lng_val = render_pick_map(
-            map_key_prefix="map_p3",
-            style_key="style_p3",
-            clicked_key="clicked_p3"
-        )
+        lat_val, lng_val = render_pick_map("map_p3", "style_p3", "clicked_p3")
 
     with right:
         st.markdown("### Formulario (Empleabilidad)")
@@ -771,7 +779,6 @@ with tabs[2]:
         label="Página 3 (Empleabilidad)",
         preview_cols=["id","Canton","Cursos Brindados","Cantidad de personas matriculadas","Cantidad de personas egresadas","sexo por personas egresadas","maps_link","date"]
     )
-
 # ==========================================================
 # PÁGINA 4 — Bandas municipales (imagen 3) + MAPA + CRUD
 # ==========================================================
@@ -781,11 +788,7 @@ with tabs[3]:
     left, right = st.columns([0.58, 0.42], gap="large")
     with left:
         st.markdown("### Selecciona un punto en el mapa")
-        lat_val, lng_val = render_pick_map(
-            map_key_prefix="map_p4",
-            style_key="style_p4",
-            clicked_key="clicked_p4"
-        )
+        lat_val, lng_val = render_pick_map("map_p4", "style_p4", "clicked_p4")
 
     with right:
         st.markdown("### Formulario (Bandas municipales)")
@@ -847,6 +850,7 @@ with tabs[3]:
         label="Página 4 (Bandas municipales)",
         preview_cols=["id","provincia","Canton","Nombre de club o banda","Beneficiarios","maps_link","date"]
     )
+
 # ==========================================================
 # PÁGINA 5 — Factores (MAPA + CRUD)
 # ==========================================================
@@ -856,11 +860,7 @@ with tabs[4]:
     left, right = st.columns([0.58, 0.42], gap="large")
     with left:
         st.markdown("### Selecciona un punto en el mapa")
-        lat_val, lng_val = render_pick_map(
-            map_key_prefix="map_p5",
-            style_key="style_p5",
-            clicked_key="clicked_p5"
-        )
+        lat_val, lng_val = render_pick_map("map_p5", "style_p5", "clicked_p5")
 
     with right:
         st.markdown("### Formulario (factores)")
@@ -935,7 +935,6 @@ with tabs[4]:
 
 # ==========================================================
 # VISOR (capas) — Pines por provincia (TODAS las páginas)
-# Ahora P1..P5 tienen maps_link => el visor puede mostrarlas todas.
 # ==========================================================
 with tabs[-2]:
     st.subheader("🗺️ Visor (capas) — Ver datos por página o todo junto")
@@ -969,9 +968,7 @@ with tabs[-2]:
                  if show_clusters else folium.FeatureGroup(name="Marcadores", overlay=True, control=True))
         group.add_to(m)
 
-        heat_points = []
-        idx = 0
-        omitidos = 0
+        heat_points, idx, omitidos = [], 0, 0
 
         for _, r in dfv.iterrows():
             lat, lng = r.get("lat"), r.get("lng")
@@ -979,8 +976,6 @@ with tabs[-2]:
                 omitidos += 1
                 continue
 
-            # Para páginas donde no hay "provincia" (P2/P3),
-            # la inferimos desde el texto "Canton" que guardamos como "Provincia / Cantón"
             prov = str(r.get("provincia","")).strip()
             if not prov and str(r.get("Canton","")).strip():
                 prov_guess = str(r.get("Canton","")).split("/")[0].strip()
@@ -1067,8 +1062,6 @@ with tabs[-2]:
 
         st.divider()
         st.markdown("#### Tabla (según filtros)")
-        base_cols = ["page","date","maps_link"]
-        # mostramos lo más relevante según página (sin índice)
         if layer == "Página 1":
             show_cols = ["page","provincia","canton","distrito","date","maps_link"] + [f"estructura_{i}" for i in range(1,12)]
         elif layer == "Página 2":
@@ -1080,11 +1073,21 @@ with tabs[-2]:
         elif layer == "Página 5":
             show_cols = ["page","provincia","canton","distrito","factores","date","maps_link"]
         else:
-            # (Todas)
-            show_cols = [c for c in ["page","provincia","canton","distrito","Canton","Community Prevention Centers","Cursos Brindados","Nombre de club o banda","Beneficiaries","Beneficiarios","date","maps_link"] if c in dfv.columns]
+            show_cols = [c for c in [
+                "page","provincia","canton","distrito","Canton",
+                "Community Prevention Centers","Cursos Brindados","Nombre de club o banda",
+                "Beneficiaries","Beneficiarios","date","maps_link"
+            ] if c in dfv.columns]
 
         show_cols = [c for c in show_cols if c in dfv.columns]
         hide_df_index(dfv[show_cols].copy())
+
+        st.download_button(
+            "⬇️ Descargar CSV (visor)",
+            data=dfv[show_cols].to_csv(index=False).encode("utf-8"),
+            file_name="visor_paginas.csv",
+            mime="text/csv"
+        )
 
 # ==========================================================
 # GRÁFICAS — SOLO AQUÍ (bien titulado por página)
@@ -1245,15 +1248,5 @@ with tabs[-1]:
                     fig = px.bar(
                         s.sort_values("conteo", ascending=True),
                         x="conteo", y="factor", orientation="h", text="conteo",
-                        template="plotly_dark",
-                        title="Top factores"
-                    )
-                    fig.update_traces(textposition="outside", cliponaxis=False)
-                    fig.update_layout(height=720, margin=dict(l=10, r=10, t=60, b=10))
-                    st.plotly_chart(fig, use_container_width=True)
-
-        st.divider()
-        st.markdown("#### Datos base (según página)")
-        hide_df_index(dfg.head(500))
-
+                        template="pl
 
